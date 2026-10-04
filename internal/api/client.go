@@ -14,8 +14,8 @@ import (
 
 const (
 	DefaultBaseURL    = "https://openapi.api.govee.com"
-	DefaultAuthHeader = "Govee-API-Key"
-	DefaultAuthScheme = ""
+	DefaultAuthHeader = "Authorization"
+	DefaultAuthScheme = "Bearer"
 	DefaultUserAgent  = "goveetl/dev"
 )
 
@@ -110,6 +110,10 @@ func (e *APIError) Error() string {
 }
 
 func (c *Client) Do(ctx context.Context, method, requestPath string, query url.Values, body any) ([]byte, error) {
+	return c.DoWithHeaders(ctx, method, requestPath, query, body, nil)
+}
+
+func (c *Client) DoWithHeaders(ctx context.Context, method, requestPath string, query url.Values, body any, extra http.Header) ([]byte, error) {
 	method = strings.ToUpper(strings.TrimSpace(method))
 	if method == "" {
 		return nil, fmt.Errorf("method is required")
@@ -135,6 +139,11 @@ func (c *Client) Do(ctx context.Context, method, requestPath string, query url.V
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
+	}
+	for key, values := range extra {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", c.userAgent)
@@ -176,7 +185,11 @@ func (c *Client) Do(ctx context.Context, method, requestPath string, query url.V
 }
 
 func (c *Client) DoJSON(ctx context.Context, method, requestPath string, query url.Values, body any, out any) error {
-	data, err := c.Do(ctx, method, requestPath, query, body)
+	return c.DoJSONWithHeaders(ctx, method, requestPath, query, body, out, nil)
+}
+
+func (c *Client) DoJSONWithHeaders(ctx context.Context, method, requestPath string, query url.Values, body any, out any, extra http.Header) error {
+	data, err := c.DoWithHeaders(ctx, method, requestPath, query, body, extra)
 	if err != nil {
 		return err
 	}
@@ -187,6 +200,11 @@ func (c *Client) DoJSON(ctx context.Context, method, requestPath string, query u
 		return fmt.Errorf("decode response JSON: %w", err)
 	}
 	return nil
+}
+
+// BaseURL exposes the configured base URL for cross-service calls.
+func (c *Client) BaseURL() string {
+	return c.baseURL
 }
 
 func (c *Client) url(requestPath string, query url.Values) (string, error) {

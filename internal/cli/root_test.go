@@ -45,8 +45,12 @@ func TestDoctor(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("code = %d stderr = %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), `"ok": true`) {
-		t.Fatalf("stdout = %s", stdout.String())
+	// doctor reports every backend; nothing is configured here
+	out := stdout.String()
+	for _, key := range []string{`"app": {`, `"openapi": {`, `"token": false`} {
+		if !strings.Contains(out, key) {
+			t.Fatalf("stdout = %s", out)
+		}
 	}
 }
 

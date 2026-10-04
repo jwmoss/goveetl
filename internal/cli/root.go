@@ -29,17 +29,17 @@ var (
 )
 
 type globals struct {
-	configPath string
-	baseURL    string
-	asJSON     bool
-	plain      bool
-	quiet      bool
-	noColor    bool
+	configPath  string
+	baseURL     string
+	asJSON      bool
+	plain       bool
+	quiet       bool
+	noColor     bool
 	showVersion bool
-	timeout    time.Duration
-	traceHTTP  bool
-	dryRun     bool
-	noInput    bool
+	timeout     time.Duration
+	traceHTTP   bool
+	dryRun      bool
+	noInput     bool
 }
 
 type runtime struct {
@@ -118,8 +118,13 @@ func newRootCommand(rc *runtime) *cobra.Command {
 	root.AddCommand(newVersionCommand(rc))
 	root.AddCommand(newConfigCommand(rc))
 	root.AddCommand(newDoctorCommand(rc))
+	root.AddCommand(newAuthCommand(rc))
 	root.AddCommand(newRawCommand(rc))
-	root.AddCommand(newResourcesCommand(rc))
+	root.AddCommand(newDevicesCommand(rc))
+	root.AddCommand(newControlCommand(rc))
+	root.AddCommand(newGroupsCommand(rc))
+	root.AddCommand(newMqttCommand(rc))
+	root.AddCommand(newLanCommand(rc))
 	root.AddCommand(newCompletionCommand(root))
 
 	return root

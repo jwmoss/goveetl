@@ -13,7 +13,7 @@ import (
 
 func TestDoAddsAuthAndDecodesJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get(DefaultAuthHeader); got != "Bearer token-123" {
+		if got := r.Header.Get("Authorization"); got != "Bearer token-123" {
 			t.Fatalf("auth header = %q", got)
 		}
 		if got := r.URL.Query().Get("page"); got != "1" {
@@ -23,7 +23,7 @@ func TestDoAddsAuthAndDecodesJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL, WithAuth(DefaultAuthHeader, DefaultAuthScheme, "token-123"))
+	client := New(server.URL, WithAuth("Authorization", "Bearer", "token-123"))
 	query := url.Values{"page": []string{"1"}}
 	var out map[string]string
 	if err := client.DoJSON(context.Background(), http.MethodGet, "/test", query, nil, &out); err != nil {
