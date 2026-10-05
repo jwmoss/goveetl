@@ -91,11 +91,7 @@ func (r OpenAPIStateResult) Text() string {
 }
 
 // OpenAPISceneResult is the dynamic-scene list returned for one device.
-type OpenAPISceneResult struct {
-	Code    int             `json:"code"`
-	Message string          `json:"message"`
-	Data    json.RawMessage `json:"data"`
-}
+type OpenAPISceneResult = OpenAPIStateResult
 
 // requestID matches the uuid-shaped requestId the API expects.
 func requestID() string { return uuid.NewString() }
@@ -235,16 +231,20 @@ func (o *OpenAPI) Control(ctx context.Context, device, sku, capType, instance st
 }
 
 // Scenes lists the dynamic scenes (light scenes) of one device.
-func (o *OpenAPI) Scenes(ctx context.Context, device, sku string) (*OpenAPISceneResult, error) {
+func (o *OpenAPI) Scenes(ctx context.Context, device, sku string, diy bool) (*OpenAPISceneResult, error) {
 	body := map[string]any{
 		"requestId": requestID(),
 		"payload":   map[string]string{"device": device, "sku": sku},
 	}
 	var out OpenAPISceneResult
-	if err := o.client.DoJSON(ctx, http.MethodPost, "/router/api/v1/device/scenes", nil, body, &out); err != nil {
+	endpoint := "/router/api/v1/device/scenes"
+	if diy {
+		endpoint = "/router/api/v1/device/diy-scenes"
+	}
+	if err := o.client.DoJSON(ctx, http.MethodPost, endpoint, nil, body, &out); err != nil {
 		return nil, err
 	}
-	if err := o.unwrapCode(out.Code, out.Message); err != nil {
+	if err := o.unwrapCode(out.Code, out.Text()); err != nil {
 		return nil, err
 	}
 	return &out, nil

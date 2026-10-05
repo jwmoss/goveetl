@@ -94,6 +94,12 @@ func newRootCommand(rc *runtime) *cobra.Command {
 			return errUsage
 		},
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if rc.g.dryRun {
+				switch cmd.Name() {
+				case "control", "login", "refresh", "logout", "set", "init":
+					return fmt.Errorf("dry-run: refusing %s", cmd.CommandPath())
+				}
+			}
 			if commandSkipsClient(cmd) {
 				rc.out = output.New(rc.stdout, rc.stderr, rc.g.asJSON, rc.g.plain, rc.g.quiet, rc.g.noColor)
 				return nil
@@ -112,7 +118,7 @@ func newRootCommand(rc *runtime) *cobra.Command {
 	flags.BoolVar(&rc.g.showVersion, "version", false, "print version and exit")
 	flags.DurationVar(&rc.g.timeout, "timeout", 30*time.Second, "HTTP timeout")
 	flags.BoolVar(&rc.g.traceHTTP, "trace-http", false, "log HTTP requests to stderr without secrets")
-	flags.BoolVar(&rc.g.dryRun, "dry-run", false, "refuse non-GET HTTP requests")
+	flags.BoolVar(&rc.g.dryRun, "dry-run", false, "refuse mutations and non-GET raw requests")
 	flags.BoolVar(&rc.g.noInput, "no-input", false, "disable interactive prompts")
 
 	root.AddCommand(newVersionCommand(rc))
@@ -121,6 +127,7 @@ func newRootCommand(rc *runtime) *cobra.Command {
 	root.AddCommand(newAuthCommand(rc))
 	root.AddCommand(newRawCommand(rc))
 	root.AddCommand(newDevicesCommand(rc))
+	root.AddCommand(newScenesCommand(rc))
 	root.AddCommand(newControlCommand(rc))
 	root.AddCommand(newGroupsCommand(rc))
 	root.AddCommand(newMqttCommand(rc))

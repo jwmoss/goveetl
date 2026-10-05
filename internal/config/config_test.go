@@ -41,3 +41,19 @@ func TestSaveWritesConfig(t *testing.T) {
 		t.Fatalf("mode = %v", got)
 	}
 }
+
+func TestAppHostDefaultsAndLegacyConfig(t *testing.T) {
+	for _, body := range []string{"", "base_url: https://openapi.api.govee.com\n"} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.BaseURL != "https://app2.govee.com" || cfg.OpenAPIBaseURL != "https://openapi.api.govee.com" {
+			t.Errorf("app=%s official=%s", cfg.BaseURL, cfg.OpenAPIBaseURL)
+		}
+	}
+}

@@ -1,13 +1,14 @@
 package govee_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jwmoss/goveetl/internal/govee"
 )
@@ -70,32 +71,56 @@ func TestAppHeadersAttachedOnRealRequest(t *testing.T) {
 	}
 }
 
-func TestLANAESEncryptDecryptRoundtrip(t *testing.T) {
-	key := bytes.Repeat([]byte{0x42}, 16)
-	plaintext := govee.LANMessage{Cmd: "on", Data: map[string]int{"val": 1}}
-	ciphertext, err := govee.EncryptLANMessage(key, plaintext)
+func TestLANPlaintextStatus(t *testing.T) {
+	device, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 4003})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ciphertext)%16 != 0 || len(ciphertext) == 0 {
-		t.Fatalf("ciphertext length %d", len(ciphertext))
-	}
-	data, err := govee.DecryptLANMessage(key, ciphertext)
+	defer device.Close()
+	packets := make(chan string, 1)
+	go func() {
+		_ = device.SetReadDeadline(time.Now().Add(time.Second))
+		buf := make([]byte, 4096)
+		n, addr, err := device.ReadFromUDP(buf)
+		if err != nil {
+			packets <- err.Error()
+			return
+		}
+		packets <- string(buf[:n])
+		_, _ = device.WriteToUDP([]byte(`{"msg":{"cmd":"scan","data":{}}}`), &net.UDPAddr{IP: addr.IP, Port: 4002})
+		_, _ = device.WriteToUDP([]byte(`{"msg":{"cmd":"devStatus","data":{"brightness":60}}}`), &net.UDPAddr{IP: addr.IP, Port: 4002})
+	}()
+	reply, err := govee.NewLAN().Control("127.0.0.1", govee.LANMessage{Cmd: "devStatus", Data: map[string]any{}}, 200*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var back govee.LANMessage
-	if err := json.Unmarshal(data, &back); err != nil {
-		t.Fatal(err)
+	if got := <-packets; got != `{"msg":{"cmd":"devStatus","data":{}}}` {
+		t.Fatalf("packet = %s", got)
 	}
-	if back.Cmd != "on" {
-		t.Fatalf("cmd = %q", back.Cmd)
+	if string(reply) != `{"msg":{"cmd":"devStatus","data":{"brightness":60}}}` {
+		t.Fatalf("reply = %s", reply)
+	}
+	if _, err := govee.NewLAN().Control("127.0.0.1", govee.LANMessage{Cmd: "devStatus"}, 20*time.Millisecond); err == nil {
+		t.Fatal("missing status reply must fail")
 	}
 }
 
-func TestLANRejectsShortKey(t *testing.T) {
-	if _, err := govee.EncryptLANMessage(bytes.Repeat([]byte{1}, 8), govee.LANMessage{Cmd: "on"}); err == nil {
-		t.Fatal("expected error for 8-byte key")
+func TestSameModeGroupDevices(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bff-app/v1/general-control/list" {
+			_, _ = w.Write([]byte(`{"status":200,"data":{"list":[{"groupId":42,"type":4,"devices":[{"device":"AA:BB","sku":"H6006","deviceName":"Porch"}]}]}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":200,"data":[]}`))
+	}))
+	defer server.Close()
+	app := govee.NewApp(server.URL, "test-token", "7.6.21", govee.AppHeaders{})
+	devices, err := app.GroupDevices(context.Background(), "42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*devices) != 1 || (*devices)[0].Device != "AA:BB" {
+		t.Fatalf("devices=%v", devices)
 	}
 }
 
@@ -104,11 +129,15 @@ func TestWriteEnvelopeShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if envelope["type"] != 1 || envelope["origin"] != 32 {
+	message, ok := envelope["msg"].(map[string]any)
+	if !ok {
+		t.Fatalf("msg envelope missing: %v", envelope)
+	}
+	if message["type"] != 1 || message["origin"] != 32 {
 		t.Fatalf("envelope = %#v", envelope)
 	}
-	if envelope["accountTopic"] != "aws/smarthome/users/42" {
-		t.Fatalf("accountTopic = %v", envelope["accountTopic"])
+	if message["accountTopic"] != "aws/smarthome/users/42" {
+		t.Fatalf("accountTopic = %v", message["accountTopic"])
 	}
 	if _, err := govee.WriteEnvelope("tx-1", "", "turn", 1, nil); err == nil {
 		t.Fatal("expected error for empty account topic")

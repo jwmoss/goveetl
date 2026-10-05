@@ -75,7 +75,7 @@ func newMqttTopicCommand(rc *runtime) *cobra.Command {
 				if terr != nil {
 					return terr
 				}
-				topic = resolved.AccountTopic
+				topic = resolved
 			}
 			payload := map[string]any{
 				"account_topic": rc.cfg.AccountTopic,
@@ -116,23 +116,20 @@ func newMqttWatchCommand(rc *runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cert, cerr := app.IotCert(ctx)
-			if cerr == nil {
-				mqttEndpoint = cert.Endpoint
+			cert, err := app.IotCert(ctx)
+			if err != nil {
+				return err
 			}
+			mqttEndpoint = cert.Endpoint
 			if endpoint != "" {
 				mqttEndpoint = endpoint
 			}
-			if mqttEndpoint == "" {
-				apiErr := cerr
-				if apiErr == nil {
-					apiErr = fmt.Errorf("no endpoint")
-				}
-				return fmt.Errorf("mqtt endpoint unavailable: %w", apiErr)
+			if rc.cfg.AccountTopic == "" {
+				return fmt.Errorf("mqtt: set account_topic before watch")
 			}
 			actor := mqttActorID(rc.cfg)
 			if actor == "" {
-				return fmt.Errorf("mqtt client id incomplete: run goveetl auth login (account id + device uuid)")
+				return fmt.Errorf("mqtt client id incomplete: set account_id and client_id")
 			}
 			sender := &govee.MqttSender{
 				AccountTopic: rc.cfg.AccountTopic,

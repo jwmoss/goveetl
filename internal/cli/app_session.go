@@ -16,17 +16,19 @@ func (rc *runtime) appClient(ctx context.Context) (*govee.App, error) {
 	cfg := rc.cfg
 	if cfg.ClientID == "" {
 		cfg.ClientID = uuid.NewString()
-		_ = config.Save(rc.g.configPath, *cfg)
+		if !rc.g.dryRun {
+			if err := config.Save(rc.g.configPath, *cfg); err != nil {
+				return nil, err
+			}
+		}
 	}
 	headers := govee.AppHeaders{
-		AppVersion: version, ClientID: cfg.ClientID, SysVersion: "31",
-		IotVersion: cfg.IotVersion, Language: "en-US",
+		AppVersion: "7.6.21", ClientID: cfg.ClientID, SysVersion: "31",
+		IotVersion: cfg.IotVersion, Language: "en-US", Country: "US",
 		TimeZone: "UTC",
 	}
-	// ponytail: dry-run and trace flags stay out of the app client until a
-	// live test harness needs them; api.Client covers raw paths meanwhile.
 	_ = ctx
-	return govee.NewApp(cfg.BaseURL, cfg.Token, version, headers), nil
+	return govee.NewApp(cfg.BaseURL, cfg.Token, headers.AppVersion, headers), nil
 }
 
 // openAPIClient builds the official API client with the stored API key.
@@ -58,10 +60,7 @@ func (rc *runtime) saveSession(data *govee.LoginData) error {
 
 func (rc *runtime) requireToken() error {
 	if rc.cfg.Token == "" {
-		return fmt.Errorf("app session missing: run goveetl login first")
+		return fmt.Errorf("app session missing: set GOVEETL_TOKEN or import a captured token with goveetl config set token --stdin")
 	}
 	return nil
 }
-
-// make sure the unused import stays justified
-var _ = context.TODO

@@ -4,26 +4,22 @@
 [![Release](https://img.shields.io/github/v/release/jwmoss/goveetl)](https://github.com/jwmoss/goveetl/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Command-line client for Govee cloud, app, and LAN APIs.
+Command-line client for Govee cloud, app, MQTT, and LAN APIs.
 
-`goveetl` works against three surfaces:
-
-| Backend | What it is | Auth |
+| Backend | Features | Authentication |
 | --- | --- | --- |
-| `api` | The official Govee OpenAPI (`openapi.api.govee.com`): device list, state, capabilities, control | `Govee-API-Key` from the Govee developer account |
-| `app` | The private REST API the Govee Home app drives (`app.govee.com/bff-app/...`), discovered by reverse-engineering Govee Home 7.6.21 | Bearer token from `goveetl auth login` |
-| `mqtt` | The app's AWS IoT control channel (mutual-TLS cert from the app API, write envelopes per the app's `Write` format) | App session |
-| `lan` | The published Govee LAN API: UDP discovery (4002) and AES-128-ECB control (4001) | none |
+| `api` | Device list, state, capabilities, control, dynamic scenes, DIY scene lists | Developer API key |
+| `app` | Device list and group operations through `app2.govee.com` | Captured app session token |
+| `mqtt` | Device control and state subscriptions through AWS IoT | App session and IoT certificate |
+| `lan` | Local discovery, state, and control through plaintext UDP | Enable LAN Control in Govee Home |
 
 ## Install
-
-### Go
 
 ```bash
 go install github.com/jwmoss/goveetl/cmd/goveetl@latest
 ```
 
-### Source
+Or build from source:
 
 ```bash
 git clone https://github.com/jwmoss/goveetl.git
@@ -32,108 +28,156 @@ make build
 ./bin/goveetl version
 ```
 
-## Quickstart
+## Official API
 
-Official API (key from the Govee developer portal):
-
-```bash
-goveetl config set api_key <GOVEE_API_KEY>
-goveetl devices list --backend api
-goveetl devices state H6123:12A3
-goveetl control H6123:12A3 turn 1
-goveetl devices capabilities H6123:12A3
-```
-
-Govee Home app API (no developer key required, but account credentials are used
-once at login):
+Store the API key through stdin. Replace the example device reference with a
+real `<device>:<sku>` value from the device list. The separator is the last colon.
 
 ```bash
-goveetl auth login --email you@example.com
-goveetl devices list --backend app
-goveetl groups list
-goveetl groups devices 42
-goveetl mqtt cert                  # endpoint + certificate fingerprints
-goveetl mqtt topic --device 12A3 --sku H6123
-goveetl control --backend mqtt --cmd-version 1 H6123:12A3 turn 1
+printf '%s' "$GOVEE_API_KEY" | goveetl config set api_key --stdin
+goveetl devices list --json
+goveetl devices state 'AA:BB:H706C'
+goveetl devices capabilities 'AA:BB:H706C'
+goveetl control 'AA:BB:H706C' brightness 60
+goveetl control 'AA:BB:H706C' colorTemp 2700
+goveetl control 'AA:BB:H706C' turn 1
 ```
 
-Local LAN:
+Read state before a test. Restore the original state after the test.
+`--dry-run` refuses mutations before authentication or network access.
 
 ```bash
-goveetl lan discover
-goveetl lan control 192.0.2.10 on 1
+goveetl control 'AA:BB:H706C' brightness 65 --dry-run
 ```
 
-Escapes:
+The refusal returns exit code 1. Read commands still work with `--dry-run`,
+including official state and scene requests that use HTTP POST.
+
+## Scenes and DIY
+
+Discover the values for the selected device before control:
 
 ```bash
-goveetl raw POST /bff-app/v1/device/list --data '{}'
-goveetl raw GET /bff-app/v1/general-control/list --query filterEmpty=false
+goveetl scenes 'AA:BB:H706C' --json
+goveetl scenes 'AA:BB:H706C' --diy --json
 ```
+
+Use the returned capability type, instance, and value with `control`.
+For example, a dynamic scene value can contain `id` and `paramId`:
+
+```bash
+goveetl control 'AA:BB:H706C' lightScene '{"id":10621,"paramId":17813}'
+```
+
+Scene values differ by device. The example IDs are not universal.
+The API can omit the active scene ID from state responses. Save the original
+scene selection before a scene test; color and brightness alone cannot restore it.
+
+## App session and MQTT
+
+Password login requires app encryption and is not implemented. `auth login`
+explains session import. Import an existing session captured from your own
+Govee Home app or integration:
+
+```bash
+printf '%s' "$GOVEE_TOKEN" | goveetl config set token --stdin
+printf '%s' "$GOVEE_ACCOUNT_TOPIC" | goveetl config set account_topic --stdin
+printf '%s' "$GOVEE_ACCOUNT_ID" | goveetl config set account_id --stdin
+goveetl doctor --json
+goveetl devices list --backend app --json
+goveetl groups list --json
+goveetl groups devices 42 --json
+goveetl mqtt cert
+goveetl mqtt topic --device 'AA:BB' --sku H706C
+goveetl mqtt watch --duration 30s
+```
+
+The CLI creates a client ID on the first app request. If you run a watcher and
+control command concurrently, give the watcher a separate `GOVEETL_CLIENT_ID`.
+AWS MQTT clients with the same ID can disconnect each other.
+
+MQTT requires a JSON object for command data. The command version defaults to 0;
+use `--cmd-version` when the device requires another version.
+
+```bash
+goveetl control --backend mqtt 'AA:BB:H706C' brightness '{"val":65}'
+```
+
+App tokens can expire. Import a fresh token when authentication fails.
+`auth refresh` requires a captured refresh token and remains unverified live.
+`auth logout` clears the stored session.
+
+## LAN
+
+Enable LAN Control in Govee Home. Discovery sends JSON to multicast
+`239.255.255.250:4001`. Devices reply on UDP 4002. State and control use UDP 4003.
+The deprecated `lan_key` setting is ignored.
+
+```bash
+goveetl lan discover --json
+goveetl lan discover --address 192.0.2.10 --json
+goveetl lan status 192.0.2.10
+goveetl lan control 192.0.2.10 brightness '{"value":65}'
+goveetl lan control 192.0.2.10 turn '{"value":1}'
+```
+
+Use `--address` when multicast does not reach the device. Run one LAN command
+at a time because the protocol uses a fixed reply port. A control result of
+`sent` confirms transmission; use `lan status` to verify the device state.
+A status request fails if the device does not reply.
 
 ## Configuration
 
-Config path: `$XDG_CONFIG_HOME/goveetl/config.yaml` (0600).
+The config file has mode 0600. Its default path follows the operating system:
 
-Keys: `base_url` (app API), `openapi_base_url`, `device_base_url`, `api_key`,
-`token`, `refresh_token`, `account_topic`, `account_id`, `client_id`, `email`,
-`iot_version`, `lan_key`.
+- macOS: `~/Library/Application Support/goveetl/config.yaml`
+- Linux: `$XDG_CONFIG_HOME/goveetl/config.yaml`, or `~/.config/goveetl/config.yaml`
 
-Environment variables (prefix `GOVEETL_`): `GOVEETL_API_KEY`, `GOVEETL_TOKEN`,
-`GOVEETL_REFRESH_TOKEN`, `GOVEETL_BASE_URL`, `GOVEETL_ACCOUNT_TOPIC`,
-`GOVEETL_ACCOUNT_ID`, `GOVEETL_CLIENT_ID`, `GOVEETL_EMAIL`, `GOVEETL_PASSWORD`
-(read by `auth login`, never stored), `GOVEETL_LAN_KEY`, and the endpoint
-overrides.
+Use `--config` for another path. Precedence: flags, environment, config file, defaults.
 
-Precedence: flags > environment > config file > defaults.
+Keys: `base_url`, `openapi_base_url`, `device_base_url`, `api_key`, `token`,
+`refresh_token`, `account_topic`, `account_id`, `client_id`, `email`, `iot_version`.
+Environment variables use uppercase keys with the `GOVEETL_` prefix.
 
-Passwords and tokens are never accepted as command-line flags and are never
-printed. `--dry-run` blocks all non-GET requests.
+The app host defaults to `https://app2.govee.com`. The loader corrects the
+incorrect official host saved by v1.0.0. Explicit environment and flag overrides
+remain available.
 
-## Private API provenance
+## Raw requests
 
-Endpoints, headers, login flow, the MQTT write envelope, and the `clientId`
-format come from decompiling Govee Home 7.6.21 (com.govee.home). Extracted
-evidence lives in the project notes (`../Govee_Goveetl/evidence`). All discovered
-service paths (1274) are listed there; `goveetl raw` reaches any of them.
+`raw` uses the app host and session token. It does not validate private API semantics.
 
-This tool is for interoperability with devices the user owns.
+```bash
+goveetl raw GET /bff-app/v1/device/list
+goveetl raw GET /bff-app/v1/general-control/list --query filterEmpty=false
+```
 
-## Global Flags
+`--dry-run` blocks every non-GET raw request.
 
-| Flag | Description |
-| --- | --- |
-| `--config` | Config file path |
-| `--base-url` | App API base URL override |
-| `--version` | Print version information |
-| `--json` | Emit JSON to stdout |
-| `--plain` | Emit stable plain text where available |
-| `--quiet`, `-q` | Suppress non-essential output |
-| `--no-color` | Disable color |
-| `--timeout` | HTTP timeout |
-| `--dry-run` | Refuse non-GET HTTP requests |
+## Verification and limits
 
-## Exit Codes
+Live verification covers official/app inventories, group membership, scene/DIY
+catalogs, LAN discovery/status, MQTT connection/state messages, and brightness
+control through cloud, LAN, and MQTT. Each control test restores the original state.
 
-| Code | Meaning |
-| --- | --- |
-| 0 | Success |
-| 1 | Runtime error |
-| 2 | Invalid usage |
+Group scene mutations, token refresh, and other reverse-engineered endpoints
+remain unverified. The extracted APK endpoint list is research evidence, not a
+claim that every endpoint has a supported CLI command.
 
-## Development
+Private API evidence comes from Govee Home 7.6.21. Use the tool with devices you own.
+
+## Global flags
+
+`--config`, `--base-url`, `--version`, `--json`, `--plain`, `--quiet`, `--no-color`,
+`--timeout`, `--trace-http`, `--dry-run`, `--no-input`.
+
+Exit codes: 0 for success, 1 for runtime errors or dry-run refusal, 2 for invalid usage.
+
+## Development and release
 
 ```bash
 make check
 ```
 
-## Release
-
-Tag a semver release:
-
-```bash
-git tag v0.1.0 && git push origin v0.1.0
-```
-
-The release workflow uses GoReleaser. Set `HOMEBREW_TAP_TOKEN` before the first
-tagged release so GoReleaser can update `jwmoss/homebrew-tap`.
+Unit tests use local HTTP, MQTT, and UDP fixtures. Live device tests remain manual.
+Release instructions are in [skills/goveetl-release/SKILL.md](skills/goveetl-release/SKILL.md).
