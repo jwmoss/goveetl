@@ -34,10 +34,16 @@ func newConfigSetCommand(rc *runtime) *cobra.Command {
 	var fromStdin bool
 	cmd := &cobra.Command{
 		Use:   "set <key> <value>",
-		Short: "Set one config key (api_key, lan_key, email, ...)",
-		Args:  usageArgs(cobra.ExactArgs(2)),
+		Short: "Set one config key (api_key, lan_key, email, ...). Use --stdin to read value from stdin",
+		Args:  usageArgs(cobra.RangeArgs(1, 2)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			key, value := args[0], args[1]
+			key := args[0]
+			value := ""
+			if len(args) == 2 {
+				value = args[1]
+			} else if !fromStdin {
+				return fmt.Errorf("%w: provide a value or pass --stdin", errUsage)
+			}
 			if fromStdin {
 				in, readErr := io.ReadAll(cmd.InOrStdin())
 				if readErr != nil {

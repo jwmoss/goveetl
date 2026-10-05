@@ -30,11 +30,13 @@ type deviceRef struct {
 }
 
 func parseDeviceRef(args string) (deviceRef, error) {
-	parts := strings.SplitN(args, ":", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return deviceRef{}, fmt.Errorf("%w: expected <device>:<sku> like \"H6123:12A3\"", errUsage)
+	// Device ids are MAC-like with colons ("B4:11:D0:C9:07:BF:F5:60"), so
+	// the separator must be the LAST colon: B4:11:...:60:H6006.
+	idx := strings.LastIndex(args, ":")
+	if idx <= 0 || idx == len(args)-1 {
+		return deviceRef{}, fmt.Errorf("%w: expected <device>:<sku> like \"B4:11:D0:C9:07:BF:F5:60:H6006\"", errUsage)
 	}
-	return deviceRef{Device: parts[0], Sku: parts[1]}, nil
+	return deviceRef{Device: args[:idx], Sku: args[idx+1:]}, nil
 }
 
 func newDevicesListCommand(rc *runtime) *cobra.Command {
@@ -60,12 +62,11 @@ func newDevicesListCommand(rc *runtime) *cobra.Command {
 				rows = make([]map[string]any, 0, len(list.Data))
 				for _, d := range list.Data {
 					rows = append(rows, map[string]any{
-						"device":   d.Device,
-						"sku":      d.Sku,
-						"name":     displayOr(d.DeviceName, d.Extension.DeviceName),
-						"http":     d.Extension.Http,
-						"firmware": d.Extension.FirmwareVersion,
-						"pact":     d.Extension.TypeCode,
+						"device":       d.Device,
+						"sku":          d.Sku,
+						"name":         d.DeviceName,
+						"type":         d.Type,
+						"capabilities": capabilityInstances(d.Capabilities),
 					})
 				}
 			case "app":
@@ -89,7 +90,6 @@ func newDevicesListCommand(rc *runtime) *cobra.Command {
 						"group":    d.GroupID,
 						"pact":     fmt.Sprintf("%d/%d", d.PactType, d.PactCode),
 						"firmware": strings.TrimSpace(d.VersionHard + " " + d.VersionSoft),
-						"backends": "app",
 					})
 				}
 			default:
@@ -106,7 +106,11 @@ func newDevicesListCommand(rc *runtime) *cobra.Command {
 			}
 			rc.out.Printf("%s:\n", pluralizeList(len(rows), "device"))
 			for _, row := range rows {
-				rc.out.Printf("  %-16s %-10s %-24s pact=%v\n", row["device"], row["sku"], row["name"], row["pact"])
+				extra := ""
+				if capRow, ok := row["capabilities"]; ok {
+					extra = fmt.Sprintf(" capabilities=%v", capRow)
+				}
+				rc.out.Printf("  %-18s %-8s %-24s%s\n", row["device"], row["sku"], row["name"], extra)
 			}
 			return nil
 		},
@@ -115,18 +119,13 @@ func newDevicesListCommand(rc *runtime) *cobra.Command {
 	return cmd
 }
 
-func labelForDevice(d govee.OpenAPIDevice) string {
-	if d.Extension.DeviceName != "" {
-		return d.Extension.DeviceName
+// capabilityInstances flattens the list of capability instances.
+func capabilityInstances(caps []govee.OpenAPICapability) []string {
+	out := make([]string, 0, len(caps))
+	for _, c := range caps {
+		out = append(out, c.Instance)
 	}
-	return d.DeviceName
-}
-
-func displayOr(primary, fallback string) string {
-	if strings.TrimSpace(primary) != "" {
-		return primary
-	}
-	return fallback
+	return out
 }
 
 func pluralizeList(n int, noun string) string {
@@ -161,8 +160,13 @@ func newDevicesStateCommand(rc *runtime) *cobra.Command {
 			if rc.out.IsJSON() {
 				return rc.out.JSON(state)
 			}
-			for _, item := range state.State {
-				rc.out.Printf("%-18s %v\n", item.Instance, item.State)
+			for _, device := range state.DeviceData() {
+				for _, capn := range device.Capabilities {
+					if capn.State == nil {
+						continue
+					}
+					rc.out.Printf("%-24s %v\n", capn.Instance, capn.State.Value)
+				}
 			}
 			return nil
 		},
@@ -202,30 +206,34 @@ func appDeviceState(rc *runtime, ctx context.Context, ref deviceRef) error {
 func newDevicesCapabilitiesCommand(rc *runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "capabilities <device>:<sku>",
-		Short: "List official capabilities a device supports",
+		Short: "List official capabilities a device supports (type, instance, parameters)",
 		Args:  usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref, err := parseDeviceRef(args[0])
 			if err != nil {
 				return err
 			}
-			client, err := rc.openAPIClient()
+			list, err := rc.openAPIClient()
 			if err != nil {
 				return err
 			}
-			caps, err := client.Capabilities(cmd.Context(), ref.Device, ref.Sku)
+			devices, err := list.ListDevices(cmd.Context())
 			if err != nil {
 				return err
 			}
-			if rc.out.IsJSON() {
-				return rc.out.JSON(caps)
-			}
-			for _, group := range caps.Data {
-				for _, capn := range group.Capabilities {
-					rc.out.Printf("cap: %s\n", capn.Type)
+			for _, device := range devices.Data {
+				if !strings.EqualFold(device.Device, ref.Device) || !strings.EqualFold(device.Sku, ref.Sku) {
+					continue
 				}
+				if rc.out.IsJSON() {
+					return rc.out.JSON(device.Capabilities)
+				}
+				for _, capn := range device.Capabilities {
+					rc.out.Printf("%s\t%s\n", capn.Type, capn.Instance)
+				}
+				return nil
 			}
-			return nil
+			return &govee.Error{Message: "device not found: " + args[0]}
 		},
 	}
 }
@@ -234,9 +242,10 @@ func newDevicesCapabilitiesCommand(rc *runtime) *cobra.Command {
 // pass-through MQTT envelopes.
 func newControlCommand(rc *runtime) *cobra.Command {
 	var (
-		backend  string
-		instance string
-		version  int
+		backend     string
+		instance    string
+		capTypeFlag string
+		version     int
 	)
 	cmd := &cobra.Command{
 		Use: "control <device>:<sku> <name> [value]",
@@ -263,7 +272,17 @@ func newControlCommand(rc *runtime) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return client.Control(cmd.Context(), ref.Device, ref.Sku, name, fallback(instance, defaultInstance(name)), value)
+				capType, inst, known := govee.CapRoute(name)
+				if instance != "" {
+					inst = instance
+				}
+				if !known && inst == "" {
+					return fmt.Errorf("not a known command: %q; use --instance and --capability-type", name)
+				}
+				if cmd.Flags().Changed("capability-type") {
+					capType = capTypeFlag
+				}
+				return client.Control(cmd.Context(), ref.Device, ref.Sku, capType, inst, value)
 			case "mqtt":
 				return mqttControl(rc, cmd.Context(), mqttCmdInput{
 					Device: ref.Device, Sku: ref.Sku,
@@ -275,25 +294,13 @@ func newControlCommand(rc *runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&backend, "backend", "", "control channel: api (official) or mqtt (app IOT)")
-	cmd.Flags().StringVar(&instance, "instance", "", "capability instance id (e.g. control.turn)")
+	cmd.Flags().StringVar(&instance, "instance", "", "capability instance override (e.g. powerSwitch)")
+	cmd.Flags().StringVar(&capTypeFlag, "capability-type", "", "capability type override (e.g. devices.capabilities.on_off)")
 	cmd.Flags().IntVar(&version, "cmd-version", 1, "MQTT cmdVersion for --backend mqtt")
 	return cmd
 }
 
 // defaultInstance maps well-known command names to instances (v1 semantics).
-// fallback returns the first non-empty string.
-func fallback(value, fb string) string {
-	if strings.TrimSpace(value) != "" {
-		return value
-	}
-	return fb
-}
-
-// defaultInstance maps well-known command names to instances (v1 semantics).
-func defaultInstance(name string) string {
-	return "control." + name
-}
-
 func parseControlValue(literal string) (any, error) {
 	if n, err := strconv.Atoi(literal); err == nil {
 		return n, nil
