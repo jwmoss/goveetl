@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -130,11 +131,6 @@ func (rc *runtime) emitRawJSON(data []byte) error {
 	return rc.out.JSON(decoded)
 }
 
-// lanKey returns the configured local AES-128 key (16 chars or hex).
-func (rc *runtime) lanKey() string {
-	return rc.cfg.LANKey
-}
-
 func newLanCommand(rc *runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "lan",
@@ -142,17 +138,19 @@ func newLanCommand(rc *runtime) *cobra.Command {
 	}
 	cmd.AddCommand(newLanScanCommand(rc))
 	cmd.AddCommand(newLanControlCommand(rc))
+	cmd.AddCommand(newLanStatusCommand(rc))
 	return cmd
 }
 
 func newLanScanCommand(rc *runtime) *cobra.Command {
 	var wait time.Duration
+	var address string
 	cmd := &cobra.Command{
 		Use:   "discover",
 		Short: "Broadcast the LAN scan and print replies",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			sock := govee.NewLAN([]byte(rc.lanKey()))
-			devices, err := sock.Scan(wait)
+			sock := govee.NewLAN()
+			devices, err := sock.Scan(address, wait)
 			if err != nil {
 				return err
 			}
@@ -167,6 +165,7 @@ func newLanScanCommand(rc *runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().DurationVar(&wait, "wait", 3*time.Second, "listen window")
+	cmd.Flags().StringVar(&address, "address", "", "device IPv4 address (default multicast)")
 	return cmd
 }
 
@@ -174,7 +173,7 @@ func newLanControlCommand(rc *runtime) *cobra.Command {
 	var wait time.Duration
 	cmd := &cobra.Command{
 		Use:   "control <ip> <cmd> <dataJson>",
-		Short: "Send one encrypted LAN command (e.g. on, brightness)",
+		Short: "Send one LAN command (e.g. turn, brightness) with JSON object data",
 		Args:  usageArgs(cobra.ExactArgs(3)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ip, command, dataLiteral := args[0], args[1], args[2]
@@ -182,7 +181,10 @@ func newLanControlCommand(rc *runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sock := govee.NewLAN([]byte(rc.lanKey()))
+			if _, ok := value.(map[string]any); !ok {
+				return fmt.Errorf("%w: LAN data must be a JSON object, e.g. {\"value\":1}", errUsage)
+			}
+			sock := govee.NewLAN()
 			reply, err := sock.Control(ip, govee.LANMessage{Cmd: command, Data: value}, wait)
 			if err != nil {
 				return err
@@ -190,6 +192,24 @@ func newLanControlCommand(rc *runtime) *cobra.Command {
 			if reply == nil {
 				rc.out.Success("sent")
 				return nil
+			}
+			return rc.emitRawJSON(reply)
+		},
+	}
+	cmd.Flags().DurationVar(&wait, "wait", 1500*time.Millisecond, "reply wait")
+	return cmd
+}
+
+func newLanStatusCommand(rc *runtime) *cobra.Command {
+	var wait time.Duration
+	cmd := &cobra.Command{
+		Use:   "status <ip>",
+		Short: "Read device state directly over LAN",
+		Args:  usageArgs(cobra.ExactArgs(1)),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			reply, err := govee.NewLAN().Control(args[0], govee.LANMessage{Cmd: "devStatus"}, wait)
+			if err != nil {
+				return err
 			}
 			return rc.emitRawJSON(reply)
 		},

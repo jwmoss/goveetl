@@ -24,6 +24,32 @@ func newDevicesCommand(rc *runtime) *cobra.Command {
 	return cmd
 }
 
+func newScenesCommand(rc *runtime) *cobra.Command {
+	var diy bool
+	cmd := &cobra.Command{
+		Use:   "scenes <device>:<sku>",
+		Short: "List official dynamic scenes or saved DIY scenes (--diy)",
+		Args:  usageArgs(cobra.ExactArgs(1)),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ref, err := parseDeviceRef(args[0])
+			if err != nil {
+				return err
+			}
+			client, err := rc.openAPIClient()
+			if err != nil {
+				return err
+			}
+			result, err := client.Scenes(cmd.Context(), ref.Device, ref.Sku, diy)
+			if err != nil {
+				return err
+			}
+			return rc.out.JSON(result)
+		},
+	}
+	cmd.Flags().BoolVar(&diy, "diy", false, "list saved DIY scenes")
+	return cmd
+}
+
 type deviceRef struct {
 	Device string
 	Sku    string
@@ -296,7 +322,7 @@ func newControlCommand(rc *runtime) *cobra.Command {
 	cmd.Flags().StringVar(&backend, "backend", "", "control channel: api (official) or mqtt (app IOT)")
 	cmd.Flags().StringVar(&instance, "instance", "", "capability instance override (e.g. powerSwitch)")
 	cmd.Flags().StringVar(&capTypeFlag, "capability-type", "", "capability type override (e.g. devices.capabilities.on_off)")
-	cmd.Flags().IntVar(&version, "cmd-version", 1, "MQTT cmdVersion for --backend mqtt")
+	cmd.Flags().IntVar(&version, "cmd-version", 0, "MQTT cmdVersion for --backend mqtt (device-specific)")
 	return cmd
 }
 
@@ -329,9 +355,20 @@ func mqttControl(rc *runtime, ctx context.Context, in mqttCmdInput) error {
 	if err := rc.requireToken(); err != nil {
 		return err
 	}
+	if _, ok := in.Value.(map[string]any); !ok {
+		return fmt.Errorf("%w: MQTT data must be a JSON object, e.g. {\"val\":1}", errUsage)
+	}
+	envelope, err := govee.WriteEnvelope("", rc.cfg.AccountTopic, in.Cmd, in.CmdVersion, in.Value)
+	if err != nil {
+		return err
+	}
 	app, err := rc.appClient(ctx)
 	if err != nil {
 		return err
+	}
+	actor := mqttActorID(rc.cfg)
+	if actor == "" {
+		return fmt.Errorf("mqtt: set account_id and client_id before control")
 	}
 	cert, err := app.IotCert(ctx)
 	if err != nil {
@@ -341,24 +378,12 @@ func mqttControl(rc *runtime, ctx context.Context, in mqttCmdInput) error {
 	if err != nil {
 		return err
 	}
-	sender := &govee.MqttSender{
-		AccountTopic: rc.cfg.AccountTopic,
-		AccountID:    rc.cfg.AccountID,
-		ClientID:     mqttActorID(rc.cfg),
-	}
+	sender := &govee.MqttSender{AccountTopic: rc.cfg.AccountTopic, AccountID: rc.cfg.AccountID, ClientID: actor}
 	if err := sender.Connect(cert.Endpoint, []byte(cert.CertificatePem), []byte(cert.PrivateKey)); err != nil {
 		return err
 	}
 	defer sender.Disconnect()
-	sub := topic.AccountTopic
-	if sub == "" {
-		sub = rc.cfg.AccountTopic
-	}
-	envelope, err := govee.WriteEnvelope("", sub, in.Cmd, in.CmdVersion, in.Value)
-	if err != nil {
-		return err
-	}
-	return sender.SendRaw(topic.AccountTopic, envelope)
+	return sender.SendRaw(topic, envelope)
 }
 
 // mqttActorID mirrors the app clientId: "AP/<accountId>/a_<deviceUuid>".

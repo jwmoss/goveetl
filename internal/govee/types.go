@@ -110,14 +110,6 @@ type SortEntry struct {
 	Index      int    `json:"index"`
 }
 
-// LoginRequest is POST bff-app/v2/account/login.
-type LoginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	Client   string `json:"client"` // stable device UUID
-	Code     string `json:"code,omitempty"`
-}
-
 // LoginData is the login payload; token authenticates the app API and
 // topic is the MQTT account topic to subscribe.
 type LoginData struct {

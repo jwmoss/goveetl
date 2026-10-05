@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,8 +14,8 @@ import (
 	"github.com/jwmoss/goveetl/internal/api"
 )
 
-// App talks to the private REST API the Govee Home app uses (app.govee.com
-// /bff-app/... surface) with a Bearer token from Login.
+// App talks to the private REST API the Govee Home app uses (app2.govee.com
+// /bff-app/... surface) with a captured Bearer token.
 type App struct {
 	client *api.Client
 	// Headers mirrors AppHeader.getAppHeaders() from the app.
@@ -79,32 +80,6 @@ func (a *App) Do(ctx context.Context, method, path string, query map[string][]st
 	return a.client.DoWithHeaders(ctx, method, path, query, body, a.headers)
 }
 
-// Login exchanges email+password for a token bundle.
-func (a *App) Login(ctx context.Context, email, password, code string) (*LoginData, error) {
-	client := a.headers.Get("clientId")
-	if client == "" {
-		client = uuid.NewString()
-	}
-	req := LoginRequest{Email: email, Password: password, Client: client, Code: code}
-	data, err := a.Do(ctx, http.MethodPost, "/bff-app/v2/account/login", nil, req)
-	if err != nil {
-		return nil, err
-	}
-	var env Envelope[LoginData]
-	if err := json.Unmarshal(data, &env); err != nil {
-		return nil, err
-	}
-	if !env.OK() {
-		env.Data.Email = email
-		return nil, env.Err()
-	}
-	// LoginData wire names for the obfuscated A/B fields are unconfirmed;
-	// echo the request fields we trust.
-	env.Data.Email = email
-	env.Data.Client = client
-	return &env.Data, nil
-}
-
 // Refresh exchanges a refresh token for a fresh bundle.
 func (a *App) Refresh(ctx context.Context, refreshToken string) (*LoginData, error) {
 	req := RefreshTokenRequest{RefreshToken: refreshToken}
@@ -146,6 +121,27 @@ func (a *App) GroupList(ctx context.Context) ([]byte, error) {
 
 // GroupDevices lists devices of one group.
 func (a *App) GroupDevices(ctx context.Context, groupID string) (*[]Device, error) {
+	list, err := a.GroupList(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var groups Envelope[struct {
+		List []struct {
+			GroupID int      `json:"groupId"`
+			Devices []Device `json:"devices"`
+		} `json:"list"`
+	}]
+	if err := json.Unmarshal(list, &groups); err != nil {
+		return nil, err
+	}
+	if err := groups.Err(); err != nil {
+		return nil, err
+	}
+	for _, group := range groups.Data.List {
+		if strconv.Itoa(group.GroupID) == groupID && group.Devices != nil {
+			return &group.Devices, nil
+		}
+	}
 	q := map[string][]string{"groupId": {groupID}}
 	data, err := a.Do(ctx, http.MethodGet, "/bff-app/v1/general-control/group-devices", q, nil)
 	if err != nil {
@@ -176,7 +172,7 @@ func (a *App) GroupControl(ctx context.Context, req GroupControlRequest) error {
 
 // DeviceTopic resolves the per-device MQTT publish topic
 // (POST device/rest/devices/v1/appDeviceTopic on the device host).
-func (a *App) DeviceTopic(ctx context.Context, sku, device, deviceBaseURL string) (*IotAccountTopic, error) {
+func (a *App) DeviceTopic(ctx context.Context, sku, device, deviceBaseURL string) (string, error) {
 	body := struct {
 		Transaction string `json:"transaction"`
 		Sku         string `json:"sku"`
@@ -185,26 +181,33 @@ func (a *App) DeviceTopic(ctx context.Context, sku, device, deviceBaseURL string
 	if deviceBaseURL != "" && deviceBaseURL != a.client.BaseURL() {
 		data, httpErr := a.client.DoWithHeaders(ctx, http.MethodPost, deviceBaseURL+"/device/rest/devices/v1/appDeviceTopic", nil, body, a.headers)
 		if httpErr != nil {
-			return nil, httpErr
+			return "", httpErr
 		}
-		return decodeIotAccountTopic(data)
+		return decodeDeviceTopic(data)
 	}
 	data, err := a.Do(ctx, http.MethodPost, "/device/rest/devices/v1/appDeviceTopic", nil, body)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	return decodeIotAccountTopic(data)
+	return decodeDeviceTopic(data)
 }
 
-func decodeIotAccountTopic(data []byte) (*IotAccountTopic, error) {
-	var env Envelope[IotAccountTopic]
-	if err := json.Unmarshal(data, &env); err != nil {
-		return nil, err
+func decodeDeviceTopic(data []byte) (string, error) {
+	var out struct {
+		Status  int    `json:"status"`
+		Message string `json:"message"`
+		Topic   string `json:"topic"`
 	}
-	if !env.OK() {
-		return nil, env.Err()
+	if err := json.Unmarshal(data, &out); err != nil {
+		return "", err
 	}
-	return &env.Data, nil
+	if out.Status != 200 {
+		return "", &Error{Status: out.Status, Message: out.Message}
+	}
+	if out.Topic == "" {
+		return "", fmt.Errorf("app: device topic missing")
+	}
+	return out.Topic, nil
 }
 
 // IotCert fetches the MQTT mutual-TLS certificate bundle

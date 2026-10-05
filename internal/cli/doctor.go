@@ -36,7 +36,7 @@ func newDoctorCommand(rc *runtime) *cobra.Command {
 			if state := report["app"].(doctorAppResult); state.Token {
 				rc.out.Printf("app session: present (topic %s)\n", rc.cfg.AccountTopic)
 			} else {
-				rc.out.Printf("app session: MISSING (run goveetl auth login)\n")
+				rc.out.Printf("app session: MISSING (import token with goveetl config set token --stdin)\n")
 			}
 			return nil
 		},

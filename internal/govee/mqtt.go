@@ -4,18 +4,19 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
+	"strings"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"github.com/google/uuid"
 )
 
 // MqttSender sends control messages over the app's AWS IoT MQTT channel.
 //
 // Evidence (base2home/iot/Write.java, Govee Home 7.6.21):
 //
-//	{"transaction":"..","accountTopic":"..","cmd":"..","cmdVersion":1,
-//	 "data":{...},"type":1,"origin":32}
+//	{"msg":{"transaction":"..","accountTopic":"..","cmd":"..","cmdVersion":0,
+//	 "data":{...},"type":1,"origin":32}}
 //
 // clientId = "AP/<accountId>/a_<deviceUuid>"; endpoint and the mutual-TLS
 // client certificate come from GET app/v1/account/iot/key.
@@ -28,18 +29,18 @@ type MqttSender struct {
 	messages chan mqtt.Message
 }
 
-// IotTransaction produces the transaction id the app sends with every MQTT message.
-func IotTransaction() string { return uuid.NewString() }
+// IotTransaction produces a timestamp transaction ID for MQTT writes.
+func IotTransaction() string { return fmt.Sprintf("v_%d", time.Now().UnixMicro()) }
 
 // WriteEnvelope builds the app write envelope.
 func WriteEnvelope(transaction, accountTopic, cmd string, cmdVersion int, data any) (map[string]any, error) {
 	if accountTopic == "" {
-		return nil, fmt.Errorf("mqtt: account topic is required (run goveetl login)")
+		return nil, fmt.Errorf("mqtt: set account_topic before control")
 	}
 	if transaction == "" {
 		transaction = IotTransaction()
 	}
-	return map[string]any{
+	return map[string]any{"msg": map[string]any{
 		"transaction":  transaction,
 		"accountTopic": accountTopic,
 		"cmd":          cmd,
@@ -47,13 +48,19 @@ func WriteEnvelope(transaction, accountTopic, cmd string, cmdVersion int, data a
 		"data":         data,
 		"type":         1,
 		"origin":       32,
-	}, nil
+	}}, nil
 }
 
 // Connect establishes the MQTT session and optionally subscribes to topics.
 func (m *MqttSender) Connect(endpoint string, certificatePem, privateKeyPem []byte, subscribe ...string) error {
 	if endpoint == "" {
 		return fmt.Errorf("mqtt: endpoint required (fetch app/v1/account/iot/key)")
+	}
+	if !strings.Contains(endpoint, "://") {
+		if _, _, err := net.SplitHostPort(endpoint); err != nil {
+			endpoint = net.JoinHostPort(endpoint, "8883")
+		}
+		endpoint = "ssl://" + endpoint
 	}
 	cert, err := tls.X509KeyPair(certificatePem, privateKeyPem)
 	if err != nil {
@@ -65,25 +72,32 @@ func (m *MqttSender) Connect(endpoint string, certificatePem, privateKeyPem []by
 		SetTLSConfig(&tls.Config{Certificates: []tls.Certificate{cert}}).
 		SetConnectTimeout(15 * time.Second).
 		SetCleanSession(true).
+		SetAutoReconnect(false).
 		SetKeepAlive(120 * time.Second)
-	client := mqtt.NewClient(opts)
-	token := client.Connect()
-	if token.Error() != nil {
-		return fmt.Errorf("mqtt: connect: %w", token.Error())
-	}
-	if !token.WaitTimeout(20 * time.Second) {
-		return fmt.Errorf("mqtt: connect timeout (%s)", endpoint)
-	}
-	m.client = client
 	if m.messages == nil {
 		m.messages = make(chan mqtt.Message, 64)
 	}
+	client := mqtt.NewClient(opts)
+	token := client.Connect()
+	if !token.WaitTimeout(20 * time.Second) {
+		client.Disconnect(0)
+		return fmt.Errorf("mqtt: connect timeout (%s)", endpoint)
+	}
+	if token.Error() != nil {
+		return fmt.Errorf("mqtt: connect: %w", token.Error())
+	}
+	m.client = client
 	for _, sub := range subscribe {
 		if sub == "" {
 			continue
 		}
 		tok := client.Subscribe(sub, 0, m.handler)
-		if tok.Error() != nil || !tok.WaitTimeout(10*time.Second) {
+		if !tok.WaitTimeout(10 * time.Second) {
+			m.Disconnect()
+			return fmt.Errorf("mqtt: subscribe timeout %s", sub)
+		}
+		if tok.Error() != nil {
+			m.Disconnect()
 			return fmt.Errorf("mqtt: subscribe %s: %w", sub, tok.Error())
 		}
 	}
@@ -125,11 +139,11 @@ func (m *MqttSender) publish(topic string, message any) error {
 		return fmt.Errorf("mqtt: encode message: %w", err)
 	}
 	token := m.client.Publish(topic, 0, false, payload)
-	if token.Error() != nil {
-		return fmt.Errorf("mqtt: publish %s: %w", topic, token.Error())
-	}
 	if !token.WaitTimeout(10 * time.Second) {
 		return fmt.Errorf("mqtt: publish timeout %s", topic)
+	}
+	if token.Error() != nil {
+		return fmt.Errorf("mqtt: publish %s: %w", topic, token.Error())
 	}
 	return nil
 }

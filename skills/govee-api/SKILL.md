@@ -1,93 +1,106 @@
 ---
 name: govee-api
 description: >-
-  Drive Govee devices through goveetl, the repo's CLI. Use when the user asks
-  about Govee lighting, plug/thermostat/humidifier control or state, or any
-  goveetl subcommand: devices, control, groups, mqtt, lan, auth. Also covers
-  extending goveetl (adding commands/endpoints) and debugging its API calls.
+  Use goveetl for Govee device reads and control through the official API, app
+  API, MQTT, or LAN. Also use when extending device commands or debugging API
+  contracts and session setup.
 license: MIT
 ---
 
-# Govee control via goveetl
+# Govee control through goveetl
 
-This repo ships goveetl, a CLI for three Govee surfaces. Choose one per task:
+Read `AGENTS.md` before code changes. Prefer the official API for supported operations.
 
-| Surface | Auth | What it does | Verified |
-| --- | --- | --- | --- |
-| official | `Govee-API-Key` | device list with capabilities, state, control | live |
-| app | app Bearer token | device list incl. models the official API omits, rooms/groups, scenes/DIY | client built; token capture pending |
-| mqtt | app token + IoT cert | realtime per-device control and state push | built; needs login |
-| lan | AES key from config | UDP discovery (port 4002) + control (port 4001) | built; needs hardware |
+| Surface | Credentials | Live verification |
+| --- | --- | --- |
+| Official | Developer API key | Inventory, state, scenes/DIY lists, brightness control |
+| App | Captured session token | Device and group lists, same-mode group membership |
+| MQTT | App session, account ID and topic | Certificate, device topic, connection, state messages, brightness control |
+| LAN | Enable LAN Control in Govee Home | Multicast/direct discovery, state, brightness control |
 
-Prefer `official`; fall back to `app`/`mqtt` only for what the official API omits.
+## Setup
 
-## Setup (once)
+Resolve credentials at runtime. The user's 1Password item `Govee` contains
+`API_KEY`. Pass secrets through stdin or environment variables.
 
 ```bash
 printf '%s' "$GOVEE_API_KEY" | goveetl config set api_key --stdin
-goveetl doctor                 # reachability + config check
+goveetl doctor --json
 ```
 
-API key lives in 1Password item "Govee" (field `API_KEY`). Resolve at runtime:
+Password login is unsupported. Import a session captured from the user's app
+or an authorized local integration. Keep tokens out of output and evidence files.
 
 ```bash
-export GOVEE_API_KEY="$(op item get Govee --field API_KEY)"
+printf '%s' "$GOVEE_TOKEN" | goveetl config set token --stdin
+printf '%s' "$GOVEE_ACCOUNT_ID" | goveetl config set account_id --stdin
+printf '%s' "$GOVEE_ACCOUNT_TOPIC" | goveetl config set account_topic --stdin
 ```
 
-## Read device state
+The app host is `https://app2.govee.com`. A successful doctor result has status
+200 and no error for the selected backend. Reachability alone does not prove authentication.
+
+## Device control
+
+1. Read inventory and capabilities.
+2. Read the target's current state.
+3. Define how to restore the original state.
+4. Apply one change.
+5. Verify a fresh device state.
+6. Restore the original state and verify it again.
 
 ```bash
-goveetl devices list                        # --backend api (default) or app
-goveetl devices state "B4:11:D0:C9:07:BF:F5:60:H6006"
+goveetl devices list --json
+goveetl devices state '<device>:<sku>'
+goveetl control '<device>:<sku>' brightness 65 --dry-run
+goveetl control '<device>:<sku>' brightness 65
 ```
 
-The `device:sku` reference splits on the LAST colon — device ids are MAC-style
-with colons (e.g. `B4:11:D0:C9:07:BF:F5:60:H6006`).
+Device IDs contain colons. The reference separator is the last colon.
+Dry-run refuses mutations with exit code 1, including config and session changes.
 
-## Send commands
+## Scenes
 
 ```bash
-goveetl control "<ref>" turn 1
-goveetl control "<ref>" brightness 80
-goveetl control "<ref>" color '{"r":255,"g":80,"b":0}'
-goveetl control "<ref>" colorTemp 2700
-goveetl control "<ref>" devices.capabilities.on_off/powerSwitch '{"v":1}'  # full form: <capabilityType>/<instance>
-goveetl control "<ref>" turn 1 --capability-type devices.capabilities.on_off --instance powerSwitch  # explicit overrides
+goveetl scenes '<device>:<sku>' --json
+goveetl scenes '<device>:<sku>' --diy --json
 ```
 
-Route table (`internal/govee/openapi.go` `capabilityRoute`) maps short names to
-`(capability type, instance)` per the official docs. Add entries there when a
-device model exposes a new instance; never hard-code an untested route.
+Use the returned capability type, instance, and value with `control`.
+Scene IDs differ by device. The state response can omit the active scene ID.
+Only test a scene when its original selection is known or the light uses a
+restorable static color. State acceptance alone does not prove a visible effect.
 
-## Safe-change discipline
-
-State reads support a check-then-act loop. Before mutating a device you have
-not touched this session, read state first so you can restore it:
+## LAN
 
 ```bash
-goveetl devices state "<ref>"
-goveetl control "<ref>" brightness 80
-goveetl control "<ref>" brightness 60   # restore
+goveetl lan discover --json
+goveetl lan discover --address 192.0.2.10 --json
+goveetl lan status 192.0.2.10
+goveetl lan control 192.0.2.10 brightness '{"value":65}'
 ```
 
-For anything visible to the household (Moment lights, Xmas trees), leave state
-as you found it. Rate limits: control 12 rps burst 2 rps sustained per device;
-state 30/min per device; devices list 30/min per account.
+LAN uses plaintext JSON under `msg`. Discovery uses multicast port 4001;
+replies use local port 4002; control uses device port 4003. No AES key is required.
+Run LAN commands sequentially. A `sent` result confirms transmission only.
 
-## Extending goveetl
+## MQTT
 
-Read `AGENTS.md` first — it is the repo contract for layout, tests, and
-`make check` gates. Key rules while adding commands:
+```bash
+goveetl mqtt topic --device '<device>' --sku '<sku>'
+goveetl control '<device>:<sku>' brightness '{"val":65}' --backend mqtt
+goveetl mqtt watch --duration 15s
+```
 
-- put Govee wire types and request/response structs in `internal/govee/`
-- commands live in `internal/cli/`, thin over the `govee` package
-- add a capability-route entry + test in `govee_test.go` when adding a command name
-- run `make check` before handoff
+Data must be a JSON object. Command versions differ by device; the default is 0.
+Use distinct `GOVEETL_CLIENT_ID` values for concurrent watcher and control processes.
+The device publish topic differs from the account reply topic. Preserve both.
 
-## Known limits
+## Limits and changes
 
-- `app` backend needs a one-time token capture (mitmproxy + Frida SSL unpinning
-  on the Govee Home app); see `~/Documents/Govee_Goveetl/PROGRESS.md` Phase 5.
-- Session login flow (email/password into the app API) sends encrypted bodies and
-  is deliberately NOT implemented — credentials should never pass through a CLI.
-- LAN commands are built but unverified against real hardware.
+Group scene mutations and token refresh remain unverified live. The APK endpoint
+inventory does not imply complete CLI coverage. Consult the local evidence before
+adding private endpoints, then verify the wire contract against the live service.
+
+Add command routes and protocol tests in `internal/govee/`. Keep CLI wrappers thin.
+Run `make check` before handoff. Use `goveetl-release` for merge and release work.

@@ -13,7 +13,7 @@ import (
 const (
 	AppName           = "goveetl"
 	EnvPrefix         = "GOVEETL"
-	DefaultBaseURL    = "https://openapi.api.govee.com"
+	DefaultBaseURL    = "https://app2.govee.com"
 	DefaultAuthHeader = "Authorization"
 	DefaultAuthScheme = "Bearer"
 	ConfigFilename    = "config.yaml"
@@ -70,6 +70,10 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config file %s: %w", path, err)
 	}
 
+	// v1.0.0 saved the official host as the app host. Keep explicit env overrides.
+	if strings.TrimRight(cfg.BaseURL, "/") == "https://openapi.api.govee.com" {
+		cfg.BaseURL = DefaultBaseURL
+	}
 	applyEnv(&cfg)
 	normalize(&cfg)
 	return &cfg, nil
