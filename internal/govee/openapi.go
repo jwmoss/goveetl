@@ -11,162 +11,241 @@ import (
 	"github.com/jwmoss/goveetl/internal/api"
 )
 
-// OpenAPI talks to the official public API at openapi.api.govee.com
-// authenticated by the Govee-API-Key header.
+// OpenAPI talks to the official public API (developer.govee.com "v2 router"
+// contract) at https://openapi.api.govee.com with the Govee-API-Key header.
 //
-// ponytail: capability payloads are pass-through maps; type them once the
-// official examples cover the command you need.
+// Endpoints (per the official reference, fetched 2026-10):
+//
+//	GET  /router/api/v1/user/devices   — devices + capabilities (30/min)
+//	POST /router/api/v1/device/state   — {requestId, payload{sku,device}} (30/min/device)
+//	POST /router/api/v1/device/control — {requestId, payload{sku,device,capability{type,instance,value}}}
+//	POST /router/api/v1/device/scenes  — dynamic scene set
 type OpenAPI struct {
 	client *api.Client
 }
 
 // NewOpenAPI targets the official endpoint with a Govee API key.
 func NewOpenAPI(baseURL, apiKey string) *OpenAPI {
-	return &OpenAPI{client: api.New(baseURL, api.WithAuth("Govee-API-Key", "", apiKey), api.WithTimeout(30*time.Second))}
+	return &OpenAPI{client: api.New(baseURL,
+		api.WithAuth("Govee-API-Key", "", apiKey),
+		api.WithTimeout(30*time.Second),
+		api.WithUserAgent("goveetl/1"),
+	)}
 }
 
-// OpenAPIDevice is one entry of POST /v1/user/devices.
-type OpenAPIDevice struct {
-	Device           string          `json:"device"`
-	DeviceName       string          `json:"deviceName"`
-	Sku              string          `json:"sku"`
-	DefaultColorTemp json.RawMessage `json:"defaultColorTemp,omitempty"`
-	Extension        struct {
-		DeviceName      string `json:"deviceName,omitempty"`
-		Controllable    bool   `json:"controllable,omitempty"`
-		Retrievable     bool   `json:"retrievable,omitempty"`
-		Http            bool   `json:"supportHttp,omitempty"`
-		TypeCode        int    `json:"typeCode,omitempty"`
-		HardwareVersion string `json:"hardwareVersion,omitempty"`
-		FirmwareVersion string `json:"firmwareVersion,omitempty"`
-		LastConnectTime int64  `json:"lastConnectTime,omitempty"`
-	} `json:"extension,omitempty"`
-}
-
-// OpenAPIDeviceList is the POST /v1/user/devices response.
-type OpenAPIDeviceList struct {
-	Data      []OpenAPIDevice `json:"data"`
-	Code      int             `json:"code"`
-	RetStatus int             `json:"retStatus"`
-	RetCode   int             `json:"retCode"`
-	Message   string          `json:"message"`
-}
-
-// OpenAPICapabilitiesResponse is GET /v1/device/capabilities.
-type OpenAPICapabilitiesResponse struct {
-	Data []OpenAPICapabilityGroup `json:"data"`
-}
-
-// OpenAPICapabilityGroup lists capabilities for one device.
-type OpenAPICapabilityGroup struct {
-	Device       string              `json:"device"`
-	Sku          string              `json:"sku"`
-	Capabilities []OpenAPICapability `json:"capabilities"`
-}
-
-// OpenAPICapability identifies one device skill.
+// OpenAPICapability is one capability entry as returned by the device list
+// (also carries `state` objects on state responses).
 type OpenAPICapability struct {
-	Type     string          `json:"type"`
-	Instance json.RawMessage `json:"instance,omitempty"`
+	Type       string           `json:"type"`
+	Instance   string           `json:"instance"`
+	Parameters json.RawMessage  `json:"parameters,omitempty"`
+	State      *OpenAPICapState `json:"state,omitempty"`
 }
 
-// OpenAPIState is POST /v1/device/state payload.
-type OpenAPIState struct {
-	Device string                   `json:"device"`
-	Sku    string                   `json:"sku"`
-	State  []OpenAPIStateCapability `json:"state"`
+// OpenAPICapState is the reported value of one capability instance.
+type OpenAPICapState struct {
+	Value any  `json:"value"`
+	Error *any `json:"error,omitempty"`
 }
 
-// OpenAPIStateCapability is one state attribute.
-type OpenAPIStateCapability struct {
-	Instance string `json:"instance"`
-	State    any    `json:"state"`
+// OpenAPIDevice is one entry of the device list.
+type OpenAPIDevice struct {
+	Sku          string              `json:"sku"`
+	Device       string              `json:"device"`
+	DeviceName   string              `json:"deviceName,omitempty"`
+	Type         string              `json:"type,omitempty"`
+	Capabilities []OpenAPICapability `json:"capabilities,omitempty"`
+}
+
+// OpenAPIDeviceListResult is the list response envelope.
+type OpenAPIDeviceListResult struct {
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    []OpenAPIDevice `json:"data"`
+}
+
+// OpenAPIStateResult is the state response envelope. The state endpoint
+// returns the device object under payload and its message key under msg.
+type OpenAPIStateResult struct {
+	Code    int              `json:"code"`
+	Message string           `json:"message"`
+	Msg     string           `json:"msg"`
+	Payload *OpenAPIDevice   `json:"payload"`
+	Data    []*OpenAPIDevice `json:"data"`
+}
+
+// DeviceData takes the device object from whichever field the server used.
+func (r OpenAPIStateResult) DeviceData() []*OpenAPIDevice {
+	if r.Payload != nil {
+		return []*OpenAPIDevice{r.Payload}
+	}
+	return r.Data
+}
+
+// Text takes the message in either spelling.
+func (r OpenAPIStateResult) Text() string {
+	if r.Msg != "" {
+		return r.Msg
+	}
+	return r.Message
+}
+
+// OpenAPISceneResult is the dynamic-scene list returned for one device.
+type OpenAPISceneResult struct {
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data"`
 }
 
 // requestID matches the uuid-shaped requestId the API expects.
 func requestID() string { return uuid.NewString() }
 
-// ListDevices returns all devices on the account.
-func (o *OpenAPI) ListDevices(ctx context.Context) (*OpenAPIDeviceList, error) {
-	var out OpenAPIDeviceList
-	err := o.client.DoJSON(ctx, http.MethodPost, "/v1/user/devices", nil,
-		map[string]any{"requestId": requestID()}, &out)
-	if err != nil {
+func (o *OpenAPI) unwrapCode(code int, message string) error {
+	if code == 0 || code == 200 {
+		return nil
+	}
+	return &Error{Status: code, Message: message}
+}
+
+// ListDevices returns all devices with their capabilities.
+func (o *OpenAPI) ListDevices(ctx context.Context) (*OpenAPIDeviceListResult, error) {
+	var out OpenAPIDeviceListResult
+	if err := o.client.DoJSON(ctx, http.MethodGet, "/router/api/v1/user/devices", nil, nil, &out); err != nil {
 		return nil, err
 	}
-	if err := checkOpenAPI(out.Code, out.RetStatus, out.RetCode, out.Message); err != nil {
+	if err := o.unwrapCode(out.Code, out.Message); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// State reads the current state of one device.
-func (o *OpenAPI) State(ctx context.Context, device, sku string) (*OpenAPIState, error) {
-	panicless := map[string]any{
+// State reads the state of one device.
+func (o *OpenAPI) State(ctx context.Context, device, sku string) (*OpenAPIStateResult, error) {
+	body := map[string]any{
 		"requestId": requestID(),
 		"payload":   map[string]string{"device": device, "sku": sku},
 	}
-	var out OpenAPIState
-	if err := o.client.DoJSON(ctx, http.MethodPost, "/v1/device/state", nil, panicless, &out); err != nil {
+	var out OpenAPIStateResult
+	if err := o.client.DoJSON(ctx, http.MethodPost, "/router/api/v1/device/state", nil, body, &out); err != nil {
+		return nil, err
+	}
+	if err := o.unwrapCode(out.Code, out.Text()); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// Capabilities lists commands a device supports.
-func (o *OpenAPI) Capabilities(ctx context.Context, device, sku string) (*OpenAPICapabilitiesResponse, error) {
-	q := map[string][]string{
-		"capabilityType": {"v2"},
-		"sku":            {sku},
-		"device":         {device},
-	}
-	var out OpenAPICapabilitiesResponse
-	if err := o.client.DoJSON(ctx, http.MethodGet, "/v1/device/capabilities", q, nil, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
+// CapabilityType instances per the official reference.
+const (
+	CapOnOff        = "devices.capabilities.on_off"
+	CapToggle       = "devices.capabilities.toggle"
+	CapRange        = "devices.capabilities.range"
+	CapMode         = "devices.capabilities.mode"
+	CapColorSetting = "devices.capabilities.color_setting"
+	CapSegment      = "devices.capabilities.segment_color_setting"
+	CapMusic        = "devices.capabilities.music_setting"
+	CapDynamicScene = "devices.capabilities.dynamic_scene"
+	CapWorkMode     = "device.capabilities.work_mode"
+	CapTempSetting  = "device.capabilities.temperature_setting"
+)
+
+// capabilityRoute maps short command names to (capability type, instance).
+var capabilityRoute = map[string]struct{ Type, Instance string }{
+	"turn":              {CapOnOff, "powerSwitch"},
+	"power":             {CapOnOff, "powerSwitch"},
+	"powerSwitch":       {CapOnOff, "powerSwitch"},
+	"brightness":        {CapRange, "brightness"},
+	"humidity":          {CapRange, "humidity"},
+	"volume":            {CapRange, "volume"},
+	"temperature":       {CapRange, "temperature"},
+	"color":             {CapColorSetting, "colorRgb"},
+	"colorTemp":         {CapColorSetting, "colorTemperatureK"},
+	"colorTemperatureK": {CapColorSetting, "colorTemperatureK"},
+	"segmentColorRgb":   {CapSegment, "segmentedColorRgb"},
+	"segmentBrightness": {CapSegment, "segmentedBrightness"},
+	"musicMode":         {CapMusic, "musicMode"},
+	"lightScene":        {CapDynamicScene, "lightScene"},
+	"diyScene":          {CapDynamicScene, "diyScene"},
+	"snapshot":          {CapDynamicScene, "snapshot"},
+	"gearMode":          {CapMode, "gearMode"},
+	"fanSpeed":          {CapMode, "fanSpeed"},
+	"oscillationToggle": {CapToggle, "oscillationToggle"},
+	"nightlightToggle":  {CapToggle, "nightlightToggle"},
 }
 
-// Control sends a turn/brightness/color/… command. value may be a number,
-// string, object or array (e.g. segment colors).
-func (o *OpenAPI) Control(ctx context.Context, device, sku, command, instance string, value any) error {
+// CapRoute resolves a short command name ("turn", "color", ...) or an
+// explicit instance name ("powerSwitch") to (capability type, instance).
+func CapRoute(name string) (capType, instance string, ok bool) {
+	if route, hit := capabilityRoute[name]; hit {
+		return route.Type, route.Instance, true
+	}
+	// certain full form: "<type>/<instance>"
+	if type_, inst, chose := cut2(name, "/"); chose && capabilityHasType(type_) {
+		return type_, inst, true
+	}
+	// exact instance names route through their documented type
+	for _, route := range capabilityRoute {
+		if route.Instance == name {
+			return route.Type, route.Instance, true
+		}
+	}
+	return "", "", false
+}
+
+func capabilityHasType(capType string) bool {
+	for _, route := range capabilityRoute {
+		if route.Type == capType {
+			return true
+		}
+	}
+	return false
+}
+
+func cut2(s, sep string) (before, after string, found bool) {
+	for i := 0; i+len(sep) <= len(s); i++ {
+		if s[i:i+len(sep)] == sep {
+			return s[:i], s[i+len(sep):], true
+		}
+	}
+	return s, "", false
+}
+
+// Control sends one capability value to the device with an explicit
+// capability type and instance (use CapRoute to resolve short names).
+func (o *OpenAPI) Control(ctx context.Context, device, sku, capType, instance string, value any) error {
 	payload := map[string]any{
-		"device": device,
 		"sku":    sku,
+		"device": device,
 		"capability": map[string]any{
-			"type":  map[string]any{"name": command, "instance": instance},
-			"state": value,
+			"type":     capType,
+			"instance": instance,
+			"value":    value,
 		},
 	}
-	var generic map[string]any
-	err := o.client.DoJSON(ctx, http.MethodPost, "/v1/device/state/control", nil,
-		map[string]any{"requestId": requestID(), "payload": payload}, &generic)
+	var out struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	err := o.client.DoJSON(ctx, http.MethodPost, "/router/api/v1/device/control", nil,
+		map[string]any{"requestId": requestID(), "payload": payload}, &out)
 	if err != nil {
 		return err
 	}
-	return checkOpenAPIMap(generic)
+	return o.unwrapCode(out.Code, out.Message)
 }
 
-// checkOpenAPI validates the official envelope {"code","message","data"}.
-func checkOpenAPI(code, retStatus, retCode int, message string) error {
-	for _, m := range []struct {
-		label string
-		value int
-	}{
-		{"code", code}, {"retStatus", retStatus}, {"retCode", retCode},
-	} {
-		if m.value != 0 && m.value != 200 {
-			return &Error{Status: m.value, Message: m.label + ": " + message}
-		}
+// Scenes lists the dynamic scenes (light scenes) of one device.
+func (o *OpenAPI) Scenes(ctx context.Context, device, sku string) (*OpenAPISceneResult, error) {
+	body := map[string]any{
+		"requestId": requestID(),
+		"payload":   map[string]string{"device": device, "sku": sku},
 	}
-	return nil
-}
-
-func checkOpenAPIMap(generic map[string]any) error {
-	code, ok := generic["code"].(float64)
-	if !ok || code == 0 || code == 200 {
-		return nil
+	var out OpenAPISceneResult
+	if err := o.client.DoJSON(ctx, http.MethodPost, "/router/api/v1/device/scenes", nil, body, &out); err != nil {
+		return nil, err
 	}
-	msg, _ := generic["message"].(string)
-	return &Error{Status: int(code), Message: msg}
+	if err := o.unwrapCode(out.Code, out.Message); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }

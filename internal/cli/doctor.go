@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -54,9 +53,7 @@ func doctorCheckOpenAPI(rc *runtime, ctx context.Context) doctorResult {
 	}
 	client := rc.tracelessClient(rc.cfg.OpenAPIBaseURL, "Govee-API-Key", "", rc.cfg.APIKey)
 	start := time.Now()
-	_, err := client.Do(ctx, http.MethodPost, "/v1/user/devices", nil, map[string]any{
-		"requestId": fmt.Sprint(time.Now().UnixNano()),
-	})
+	_, err := client.Do(ctx, http.MethodGet, "/router/api/v1/user/devices", nil, nil)
 	out = fin(out, err, start)
 	return out
 }
