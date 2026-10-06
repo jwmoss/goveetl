@@ -32,7 +32,7 @@ func TestAutomationCommands(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var detail map[string]any
-			if err := json.Unmarshal([]byte(`{"groupId":42,"name":"Sunset","enable":1,"cmdType":129,"triggerRule":{"rule":{"cmdType":129,"cmdVal":"sunset"}},"schedule":{},"linkage":{"alternate":0,"effTime":{"days":[1,2,3],"timeZone":"America/New_York"},"ruleGroups":[{"actionType":1,"delayTime":0,"iotRules":[{"cmdGroup":1,"deviceObj":{"device":"AA:BB","sku":"H706C","name":"House","topic":"private-device-topic","settings":"preserve"},"rule":[{"cmdType":0,"cmdVal":"{\"open\":1}","iotMsg":"{\"msg\":{\"accountTopic\":\"private-account-topic\",\"cmdVersion\":0,\"origin\":35,\"type\":1,\"cmd\":\"turn\",\"data\":{\"val\":1}}}"},{"cmdType":1,"cmdVal":"{\"brightness\":80}","iotMsg":"{\"msg\":{\"accountTopic\":\"private-account-topic\",\"cmdVersion\":1,\"origin\":35,\"type\":1,\"cmd\":\"brightness\",\"data\":{\"val\":80}}}"},{"cmdType":3,"cmdVal":"{\"name\":\"Halloween D\"}","iotMsg":"scene-message"}]},{"cmdGroup":1,"deviceObj":{"device":"CC:DD","sku":"H616C","name":"Garage"},"rule":[{"cmdType":1,"cmdVal":"{\"brightness\":20}","iotMsg":"unchanged-other-action"}]}]}]}}`), &detail); err != nil {
+			if err := json.Unmarshal([]byte(`{"groupId":42,"name":"Sunset","enable":1,"cmdType":129,"triggerRule":{"deviceObj":null,"terminalId":null,"rule":{"cmdType":129,"cmdVal":"sunset"}},"schedule":{},"linkage":{"alternate":0,"effTime":{"days":[1,2,3],"timeZone":"America/New_York"},"ruleGroups":[{"iotRuleId":null,"actionType":1,"delayTime":0,"iotRules":[{"cmdGroup":1,"deviceObj":{"device":"AA:BB","sku":"H706C","name":"House","topic":"private-device-topic","settings":"preserve"},"rule":[{"cmdType":0,"cmdVal":"{\"open\":1}","iotMsg":"{\"msg\":{\"accountTopic\":\"private-account-topic\",\"cmdVersion\":0,\"origin\":35,\"type\":1,\"cmd\":\"turn\",\"data\":{\"val\":1}}}"},{"cmdType":1,"cmdVal":"{\"brightness\":80}","iotMsg":"{\"msg\":{\"accountTopic\":\"private-account-topic\",\"cmdVersion\":1,\"origin\":35,\"type\":1,\"cmd\":\"brightness\",\"data\":{\"val\":80}}}"},{"cmdType":3,"cmdVal":"{\"name\":\"Halloween D\"}","iotMsg":"scene-message"}]},{"cmdGroup":1,"deviceObj":{"device":"CC:DD","sku":"H616C","name":"Garage"},"rule":[{"cmdType":1,"cmdVal":"{\"brightness\":20}","iotMsg":"unchanged-other-action"}]}]}]}}`), &detail); err != nil {
 				t.Fatal(err)
 			}
 			if tc.name == "last-device" {
@@ -62,12 +62,26 @@ func TestAutomationCommands(t *testing.T) {
 					if schedule, ok := next["schedule"].(map[string]any); ok && len(schedule) == 0 {
 						t.Error("inactive empty schedule sent instead of omitted")
 					}
+					trigger := next["triggerRule"].(map[string]any)
+					groups := next["linkage"].(map[string]any)["ruleGroups"].([]any)
+					if value, exists := trigger["deviceObj"]; exists && value == nil {
+						_, _ = w.Write([]byte(`{"status":500,"message":"unexpected null trigger device"}`))
+						return
+					}
+					if value, exists := groups[0].(map[string]any)["iotRuleId"]; exists && value == nil {
+						_, _ = w.Write([]byte(`{"status":500,"message":"unexpected null action group ID"}`))
+						return
+					}
 					if tc.name == "rejected" {
 						_, _ = w.Write([]byte(`{"status":500,"message":"service is busy"}`))
 						return
 					}
 					if tc.name != "unchanged" {
 						detail = next
+						// Detail reads restore nullable metadata even though the app omits it on writes.
+						detail["triggerRule"].(map[string]any)["deviceObj"] = nil
+						detail["triggerRule"].(map[string]any)["terminalId"] = nil
+						detail["linkage"].(map[string]any)["ruleGroups"].([]any)[0].(map[string]any)["iotRuleId"] = nil
 					}
 					_, _ = w.Write([]byte(`{"status":200,"message":"Success"}`))
 					return

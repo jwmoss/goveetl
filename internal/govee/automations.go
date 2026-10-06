@@ -324,6 +324,8 @@ func (a *App) SetAutomationLight(ctx context.Context, id int, device, sku string
 }
 
 func (a *App) saveAutomation(ctx context.Context, doc map[string]any) (*AutomationView, error) {
+	// Gson omits null object fields. Details contain them, but the write endpoint rejects them.
+	omitAutomationNulls(doc)
 	// Details omit the list order; preserve it from the catalog instead of writing the app's default zero.
 	if _, ok := doc["groupSort"]; !ok {
 		items, err := a.ListAutomations(ctx)
@@ -359,6 +361,7 @@ func (a *App) saveAutomation(ctx context.Context, doc map[string]any) (*Automati
 	if err != nil {
 		return nil, fmt.Errorf("automation write accepted but verification failed: %w", err)
 	}
+	omitAutomationNulls(after)
 	if schedule, ok := after["schedule"].(map[string]any); ok && len(schedule) == 0 {
 		delete(after, "schedule")
 	}
@@ -371,6 +374,23 @@ func (a *App) saveAutomation(ctx context.Context, doc map[string]any) (*Automati
 		}
 	}
 	return automationView(after)
+}
+
+func omitAutomationNulls(value any) {
+	switch value := value.(type) {
+	case map[string]any:
+		for key, child := range value {
+			if child == nil {
+				delete(value, key)
+			} else {
+				omitAutomationNulls(child)
+			}
+		}
+	case []any:
+		for _, child := range value {
+			omitAutomationNulls(child)
+		}
+	}
 }
 
 func automationDeviceMatches(action map[string]any, device, sku string) bool {
