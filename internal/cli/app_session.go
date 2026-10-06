@@ -42,10 +42,11 @@ func (rc *runtime) openAPIClient() (*govee.OpenAPI, error) {
 
 // saveSession persists login output into config.
 func (rc *runtime) saveSession(data *govee.LoginData) error {
-	cfg := rc.cfg
-	if data.Token != "" {
-		cfg.Token = data.Token
+	if data.Token == "" {
+		return fmt.Errorf("Govee returned an empty app token")
 	}
+	cfg := rc.cfg
+	cfg.Token = data.Token
 	if data.RefreshToken != "" {
 		cfg.RefreshToken = data.RefreshToken
 	}
@@ -60,7 +61,7 @@ func (rc *runtime) saveSession(data *govee.LoginData) error {
 
 func (rc *runtime) requireToken() error {
 	if rc.cfg.Token == "" {
-		return fmt.Errorf("app session missing: set GOVEETL_TOKEN or import a captured token with goveetl config set token --stdin")
+		return fmt.Errorf("app session missing: run goveetl auth login --email <email>, or set GOVEETL_TOKEN")
 	}
 	return nil
 }

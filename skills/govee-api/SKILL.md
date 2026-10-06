@@ -14,7 +14,7 @@ Read `AGENTS.md` before code changes. Prefer the official API for supported oper
 | Surface | Credentials | Live verification |
 | --- | --- | --- |
 | Official | Developer API key | Inventory, state, scenes/DIY lists, brightness control |
-| App | Captured session token | Device/group lists, group membership, automation reads |
+| App | Login or imported session token | Password login, email verification, device/group lists, saved automation reads/writes |
 | MQTT | App session, account ID and topic | Certificate, device topic, connection, state messages, brightness control |
 | LAN | Enable LAN Control in Govee Home | Multicast/direct discovery, state, brightness control |
 
@@ -28,8 +28,15 @@ printf '%s' "$GOVEE_API_KEY" | goveetl config set api_key --stdin
 goveetl doctor --json
 ```
 
-Password login is unsupported. Import a session captured from the user's app
-or an authorized local integration. Keep tokens out of output and evidence files.
+Use `goveetl auth login --email <email>` for app access. Terminal prompts hide the password and email code.
+Use stdin or `GOVEETL_PASSWORD` for scripts. Supply `GOVEETL_VERIFICATION_CODE` when required.
+The CLI verifies the new token before saving it. Failed login leaves the saved session intact.
+Run `auth status --json` for fresh access checks. Re-run `auth login` to renew access.
+Password login and email verification pass live. Govee rejects token refresh with status 401;
+do not claim automatic renewal. The password and verification code are never stored.
+
+Import an existing session from the user's app or an authorized integration when needed.
+Keep tokens out of output and evidence files.
 
 ```bash
 printf '%s' "$GOVEE_TOKEN" | goveetl config set token --stdin

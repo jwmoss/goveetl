@@ -9,7 +9,7 @@ Command-line client for Govee cloud, app, MQTT, and LAN APIs.
 | Backend | Features | Authentication |
 | --- | --- | --- |
 | `api` | Device list, state, capabilities, control, dynamic scenes, DIY scene lists | Developer API key |
-| `app` | Device list and group operations through `app2.govee.com` | Captured app session token |
+| `app` | Device lists, groups, and saved automations through `app2.govee.com` | App session from `auth login` or an imported token |
 | `mqtt` | Device control and state subscriptions through AWS IoT | App session and IoT certificate |
 | `lan` | Local discovery, state, and control through plaintext UDP | Enable LAN Control in Govee Home |
 
@@ -75,9 +75,27 @@ scene selection before a scene test; color and brightness alone cannot restore i
 
 ## App session and MQTT
 
-Password login requires app encryption and is not implemented. `auth login`
-explains session import. Import an existing session captured from your own
-Govee Home app or integration:
+Sign in with your Govee account email. The CLI prompts for your password without echo.
+If Govee requires email verification, the CLI requests a code and prompts for it.
+The CLI verifies the new session before saving it. It does not store your password or code.
+
+```bash
+goveetl auth login --email you@example.com
+goveetl auth status --json
+```
+
+Later logins reuse the saved email. Run `goveetl auth login` to renew a session.
+For scripts, provide `GOVEETL_PASSWORD` or read the password from stdin:
+
+```bash
+printf '%s' "$GOVEETL_PASSWORD" | goveetl auth login --email you@example.com --stdin --no-input
+```
+
+Use `GOVEETL_VERIFICATION_CODE` when a script must supply an email code.
+`--no-input` refuses prompts and reports the missing input. Failed logins preserve the saved session.
+The CLI writes credentials to its configuration file with mode 0600.
+
+Session import remains available for an existing Govee Home session or integration:
 
 ```bash
 printf '%s' "$GOVEE_TOKEN" | goveetl config set token --stdin
@@ -103,8 +121,9 @@ use `--cmd-version` when the device requires another version.
 goveetl control --backend mqtt 'AA:BB:H706C' brightness '{"val":65}'
 ```
 
-App tokens can expire. Import a fresh token when authentication fails.
-`auth refresh` requires a captured refresh token and remains unverified live.
+App tokens can expire. Run `auth login` again when authentication fails.
+`auth refresh` requires a refresh token. Govee rejects refresh for the verified login
+with status 401; use `auth login` to renew the session. Automatic refresh is not implemented.
 `auth logout` clears the stored session.
 
 ## Govee Home automations
@@ -186,7 +205,8 @@ goveetl raw GET /bff-app/v1/general-control/list --backend app --query filterEmp
 
 ## Verification and limits
 
-Live verification covers official/app inventories, group membership, scene/DIY
+Live verification covers password login with email verification, saved-session access,
+official/app inventories, group membership, scene/DIY
 catalogs, LAN discovery/status, MQTT connection/state messages, and brightness
 control through cloud, LAN, and MQTT. Each control test restores the original state.
 
