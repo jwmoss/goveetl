@@ -2,6 +2,8 @@
 
 ## 1.2.1
 
+- Return JSON `null` for successful raw requests with no response body.
+
 - Scope credentials and custom headers to the configured origin and guard redirects.
 - Redact credential diagnostics and bound HTTP responses.
 - Publish private config and session replacements without destination symlink traversal.

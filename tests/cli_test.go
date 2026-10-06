@@ -297,8 +297,16 @@ func TestSelectedConfigPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "selected.yaml")
 	for _, flags := range [][]string{nil, {"--json"}} {
 		code, stdout, stderr := run(t, path, "", nil, append([]string{"config", "show"}, flags...)...)
-		if code != 0 || !strings.Contains(stdout, path) {
+		if code != 0 || stderr != "" {
 			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		if len(flags) > 0 {
+			var cfg map[string]any
+			if err := json.Unmarshal([]byte(stdout), &cfg); err != nil || cfg["path"] != path {
+				t.Fatalf("selected JSON path: %s; error=%v", stdout, err)
+			}
+		} else if !strings.Contains(stdout, path) {
+			t.Fatalf("selected text path: %s", stdout)
 		}
 	}
 }

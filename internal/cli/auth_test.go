@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 
@@ -131,7 +132,7 @@ func TestAuthLogin(t *testing.T) {
 					t.Fatal("verified session not saved, or previous account data retained")
 				}
 				info, _ := os.Stat(path)
-				if info.Mode().Perm() != 0600 {
+				if goruntime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 					t.Fatal("session file is not private")
 				}
 			} else {

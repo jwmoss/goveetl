@@ -93,7 +93,7 @@ printf '%s' "$GOVEETL_PASSWORD" | goveetl auth login --email you@example.com --s
 
 Use `GOVEETL_VERIFICATION_CODE` when a script must supply an email code.
 `--no-input` refuses prompts and reports the missing input. Failed logins preserve the saved session.
-The CLI writes credentials to its configuration file with mode 0600.
+The CLI writes credentials to a private configuration file.
 
 Session import remains available for an existing Govee Home session or integration:
 
@@ -176,7 +176,8 @@ A status request fails if the device does not reply.
 
 ## Configuration
 
-The config file has mode 0600. Its default path follows the operating system:
+POSIX config files use mode `0600`. Windows inherits permissions from the config directory.
+The default path follows the operating system:
 
 - macOS: `~/Library/Application Support/goveetl/config.yaml`
 - Linux: `$XDG_CONFIG_HOME/goveetl/config.yaml`, or `~/.config/goveetl/config.yaml`

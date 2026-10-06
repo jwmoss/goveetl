@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -37,7 +38,7 @@ func TestSaveWritesConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0600 {
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0600 {
 		t.Fatalf("mode = %v", got)
 	}
 	if err := os.Chmod(path, 0644); err != nil {
@@ -50,7 +51,7 @@ func TestSaveWritesConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0600 {
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0600 {
 		t.Fatalf("updated config mode = %v", got)
 	}
 }
@@ -79,8 +80,12 @@ func TestSavePrivateReplacement(t *testing.T) {
 	if err := os.WriteFile(target, original, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, path); err != nil {
+	originalInfo, err := os.Stat(target)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
 	}
 	if err := Save(path, Default()); err == nil {
 		t.Error("Save followed symlink")
@@ -90,7 +95,7 @@ func TestSavePrivateReplacement(t *testing.T) {
 		t.Error("symlink target changed")
 	}
 	info, _ := os.Stat(target)
-	if info.Mode().Perm() != 0644 {
+	if info.Mode() != originalInfo.Mode() {
 		t.Error("symlink target permissions changed")
 	}
 	_ = os.Remove(path)
@@ -105,7 +110,7 @@ func TestSavePrivateReplacement(t *testing.T) {
 		t.Error("hardlink target changed")
 	}
 	info, _ = os.Stat(target)
-	if info.Mode().Perm() != 0644 {
+	if info.Mode() != originalInfo.Mode() {
 		t.Error("hardlink target permissions changed")
 	}
 }

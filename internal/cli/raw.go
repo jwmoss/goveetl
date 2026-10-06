@@ -70,6 +70,9 @@ func newRawCommand(rc *runtime) *cobra.Command {
 				return err
 			}
 			if rc.out.IsJSON() {
+				if len(resp) == 0 {
+					return rc.out.JSON(nil)
+				}
 				return rc.out.JSON(json.RawMessage(resp))
 			}
 			if len(resp) > 0 {
