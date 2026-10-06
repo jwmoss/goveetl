@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/jwmoss/goveetl/internal/api"
 )
@@ -17,7 +16,8 @@ import (
 var ErrVerificationRequired = errors.New("email verification required")
 
 // Login uses the account REST endpoint used by Homebridge, not the encrypted bff login.
-func (a *App) Login(ctx context.Context, email, password, code string) (*LoginData, error) {
+func (a *App) Login(ctx context.Context, email, password, code string) (session *LoginData, err error) {
+	defer func() { err = a.client.RedactError(err, password, code) }()
 	body := struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
@@ -48,7 +48,8 @@ func (a *App) Login(ctx context.Context, email, password, code string) (*LoginDa
 	return &response.Client, nil
 }
 
-func (a *App) RequestVerification(ctx context.Context, email string) error {
+func (a *App) RequestVerification(ctx context.Context, email string) (err error) {
+	defer func() { err = a.client.RedactError(err) }()
 	body := struct {
 		Email string `json:"email"`
 		Type  int    `json:"type"`
@@ -77,7 +78,8 @@ func (a *App) accountRequest(ctx context.Context, path string, body any) ([]byte
 	headers.Set("clientType", "1")
 	headers.Set("iotVersion", "0")
 	// Login and verification must not send a previous account's bearer token.
-	client := api.New(a.client.BaseURL(), api.WithHTTPClient(&http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}), api.WithTimeout(30*time.Second),
-		api.WithUserAgent("GoveeHome/7.4.10 (com.ihoment.GoVeeSensor; build:8; iOS 26.5.0) Alamofire/5.11.0"))
+	options := append([]api.Option(nil), a.options...)
+	options = append(options, api.WithAuth("Authorization", "", ""), api.WithNoRedirects(), api.WithUserAgent("GoveeHome/7.4.10 (com.ihoment.GoVeeSensor; build:8; iOS 26.5.0) Alamofire/5.11.0"))
+	client := api.New(a.client.BaseURL(), options...)
 	return client.DoWithHeaders(ctx, http.MethodPost, path, nil, body, headers)
 }

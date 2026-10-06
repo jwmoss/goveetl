@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -124,11 +125,7 @@ func newGroupsControlCommand(rc *runtime) *cobra.Command {
 
 // emitRawJSON prints a server payload respecting --json/--plain.
 func (rc *runtime) emitRawJSON(data []byte) error {
-	var decoded any
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return rc.out.JSON(json.RawMessage(data))
-	}
-	return rc.out.JSON(decoded)
+	return rc.out.JSON(json.RawMessage(data))
 }
 
 func newLanCommand(rc *runtime) *cobra.Command {
@@ -150,7 +147,9 @@ func newLanScanCommand(rc *runtime) *cobra.Command {
 		Short: "Broadcast the LAN scan and print replies",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sock := govee.NewLAN()
-			devices, err := sock.Scan(address, wait)
+			ctx, cancel := context.WithTimeout(cmd.Context(), rc.g.timeout)
+			defer cancel()
+			devices, err := sock.ScanContext(ctx, address, wait)
 			if err != nil {
 				return err
 			}
@@ -185,7 +184,9 @@ func newLanControlCommand(rc *runtime) *cobra.Command {
 				return fmt.Errorf("%w: LAN data must be a JSON object, e.g. {\"value\":1}", errUsage)
 			}
 			sock := govee.NewLAN()
-			reply, err := sock.Control(ip, govee.LANMessage{Cmd: command, Data: value}, wait)
+			ctx, cancel := context.WithTimeout(cmd.Context(), rc.g.timeout)
+			defer cancel()
+			reply, err := sock.ControlContext(ctx, ip, govee.LANMessage{Cmd: command, Data: value}, wait)
 			if err != nil {
 				return err
 			}
@@ -207,7 +208,9 @@ func newLanStatusCommand(rc *runtime) *cobra.Command {
 		Short: "Read device state directly over LAN",
 		Args:  usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			reply, err := govee.NewLAN().Control(args[0], govee.LANMessage{Cmd: "devStatus"}, wait)
+			ctx, cancel := context.WithTimeout(cmd.Context(), rc.g.timeout)
+			defer cancel()
+			reply, err := govee.NewLAN().ControlContext(ctx, args[0], govee.LANMessage{Cmd: "devStatus"}, wait)
 			if err != nil {
 				return err
 			}

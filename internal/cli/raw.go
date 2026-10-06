@@ -27,22 +27,24 @@ func newRawCommand(rc *runtime) *cobra.Command {
 				return fmt.Errorf("dry-run: refusing %s %s", args[0], args[1])
 			}
 			var body any
-			if dataFlag != "" && fileFlag != "" {
+			if cmd.Flags().Changed("data") && cmd.Flags().Changed("file") {
 				return fmt.Errorf("%w: use only one of --data or --file", errUsage)
 			}
-			if dataFlag != "" {
-				if err := json.Unmarshal([]byte(dataFlag), &body); err != nil {
-					return fmt.Errorf("parse --data JSON: %w", err)
+			if cmd.Flags().Changed("data") {
+				if !json.Valid([]byte(dataFlag)) {
+					return fmt.Errorf("%w: parse --data JSON: invalid JSON", errUsage)
 				}
+				body = json.RawMessage(dataFlag)
 			}
-			if fileFlag != "" {
+			if cmd.Flags().Changed("file") {
 				data, err := os.ReadFile(fileFlag)
 				if err != nil {
 					return fmt.Errorf("read --file: %w", err)
 				}
-				if err := json.Unmarshal(data, &body); err != nil {
-					return fmt.Errorf("parse --file JSON: %w", err)
+				if !json.Valid(data) {
+					return fmt.Errorf("%w: parse --file JSON: invalid JSON", errUsage)
 				}
+				body = json.RawMessage(data)
 			}
 			query, err := parseQuery(queryFlag)
 			if err != nil {
@@ -67,12 +69,8 @@ func newRawCommand(rc *runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if rc.out.IsJSON() && json.Valid(resp) {
-				var decoded any
-				if err := json.Unmarshal(resp, &decoded); err != nil {
-					return err
-				}
-				return rc.out.JSON(decoded)
+			if rc.out.IsJSON() {
+				return rc.out.JSON(json.RawMessage(resp))
 			}
 			if len(resp) > 0 {
 				rc.out.Printf("%s", string(resp))

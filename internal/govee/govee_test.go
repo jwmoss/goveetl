@@ -3,6 +3,8 @@ package govee_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -10,8 +12,49 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jwmoss/goveetl/internal/api"
 	"github.com/jwmoss/goveetl/internal/govee"
 )
+
+type fixtureRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f fixtureRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestAccountRedirectPolicy(t *testing.T) {
+	requests, callbacks := 0, 0
+	supplied := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { callbacks++; return nil }, Transport: fixtureRoundTripper(func(r *http.Request) (*http.Response, error) {
+		requests++
+		if r.Header.Get("Authorization") != "" {
+			t.Error("account request sends the previous token")
+		}
+		return &http.Response{StatusCode: 307, Header: http.Header{"Location": {"/credential-sink"}}, Body: io.NopCloser(strings.NewReader("{}")), Request: r}, nil
+	})}
+	app := govee.NewApp("http://localhost", "fixture-token", "7.6.21", govee.AppHeaders{}, api.WithHTTPClient(supplied))
+	if _, err := app.Login(context.Background(), "fixture@example.invalid", "fixture-password", ""); err == nil {
+		t.Error("redirect login succeeded")
+	}
+	if err := app.RequestVerification(context.Background(), "fixture@example.invalid"); err == nil {
+		t.Error("redirect verification succeeded")
+	}
+	if requests != 2 || callbacks != 0 || supplied.CheckRedirect == nil || supplied.Timeout != 0 {
+		t.Fatalf("requests=%d callbacks=%d timeout=%s", requests, callbacks, supplied.Timeout)
+	}
+}
+
+func TestDeviceIOCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sender := &govee.MqttSender{}
+	if err := sender.ConnectContext(ctx, "fixture.invalid", nil, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("connect error=%v", err)
+	}
+	if err := sender.SendRawContext(ctx, "fixture-topic", nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("publish error=%v", err)
+	}
+	if _, err := govee.NewLAN().ControlContext(ctx, "127.0.0.1", govee.LANMessage{Cmd: "turn"}, time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("LAN error=%v", err)
+	}
+}
 
 func TestEnvelopeOKAndErr(t *testing.T) {
 	var env govee.Envelope[json.RawMessage]

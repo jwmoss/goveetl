@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,144 @@ import (
 
 	"github.com/jwmoss/goveetl/internal/config"
 )
+
+type fixtureTransport func(*http.Request) (*http.Response, error)
+
+func (f fixtureTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestProviderTransportOptions(t *testing.T) {
+	previous := http.DefaultTransport
+	defer func() { http.DefaultTransport = previous }()
+	cases := []struct {
+		args []string
+		body string
+	}{
+		{[]string{"devices", "list", "--backend", "app"}, `{"status":200,"data":{"devices":[]}}`},
+		{[]string{"devices", "list"}, `{"code":200,"data":[]}`},
+		{[]string{"devices", "state", "test:H6006"}, `{"code":200,"payload":{"device":"test","sku":"H6006"}}`},
+		{[]string{"auth", "login", "--email", "fixture@example.invalid", "--no-input"}, `{"status":401,"message":"password rejected"}`},
+		{[]string{"mqtt", "topic", "--device", "test", "--sku", "H6006"}, `{"status":200,"data":{"endpoint":"fixture"},"topic":"fixture-topic"}`},
+	}
+	for _, tc := range cases {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			t.Setenv("GOVEETL_BASE_URL", "http://localhost")
+			t.Setenv("GOVEETL_OPENAPI_BASE_URL", "http://official.invalid")
+			t.Setenv("GOVEETL_DEVICE_BASE_URL", "http://device.invalid")
+			t.Setenv("GOVEETL_TOKEN", "fixture-token")
+			t.Setenv("GOVEETL_API_KEY", "fixture-key")
+			t.Setenv("GOVEETL_CLIENT_ID", "fixture-client")
+			t.Setenv("GOVEETL_PASSWORD", "fixture-password")
+			http.DefaultTransport = fixtureTransport(func(r *http.Request) (*http.Response, error) {
+				deadline, ok := r.Context().Deadline()
+				if !ok || time.Until(deadline) > 100*time.Millisecond {
+					t.Errorf("timeout not applied: %v %v", deadline, ok)
+				}
+				if r.URL.Host == "device.invalid" && r.Header.Get("Authorization") != "Bearer fixture-token" {
+					t.Error("device host lost scoped authentication")
+				}
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(tc.body)), Header: make(http.Header), Request: r}, nil
+			})
+			var stdout, stderr bytes.Buffer
+			args := append([]string{"--config", filepath.Join(t.TempDir(), "config.yaml"), "--timeout", "50ms", "--trace-http"}, tc.args...)
+			code := Execute(context.Background(), args, strings.NewReader(""), &stdout, &stderr)
+			if tc.args[0] != "auth" && code != exitOK {
+				t.Errorf("code=%d stderr=%s", code, &stderr)
+			}
+			if !strings.Contains(stderr.String(), "[http]") {
+				t.Error("HTTP trace missing")
+			}
+		})
+	}
+}
+
+func TestProviderErrorSecrets(t *testing.T) {
+	previous := http.DefaultTransport
+	defer func() { http.DefaultTransport = previous }()
+	t.Setenv("GOVEETL_BASE_URL", "http://localhost")
+	t.Setenv("GOVEETL_DEVICE_BASE_URL", "http://device.invalid")
+	t.Setenv("GOVEETL_CLIENT_ID", "fixture-client")
+	t.Setenv("GOVEETL_TOKEN", "fixture-token")
+	t.Setenv("GOVEETL_PASSWORD", "fixture-password")
+	t.Setenv("GOVEETL_VERIFICATION_CODE", "fixture-code")
+	http.DefaultTransport = fixtureTransport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/app/v1/account/iot/key" {
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"status":200,"data":{"endpoint":"fixture"}}`)), Header: make(http.Header), Request: r}, nil
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"status":401,"message":"fixture-token fixture-password fixture-code"}`)), Header: make(http.Header), Request: r}, nil
+	})
+	for _, args := range [][]string{{"devices", "list", "--backend", "app"}, {"auth", "login", "--email", "fixture@example.invalid", "--no-input"}, {"mqtt", "topic", "--device", "test", "--sku", "H6006"}} {
+		var stdout, stderr bytes.Buffer
+		code := Execute(context.Background(), append([]string{"--config", filepath.Join(t.TempDir(), "config.yaml")}, args...), strings.NewReader(""), &stdout, &stderr)
+		if code != exitErr || stdout.Len() != 0 {
+			t.Errorf("code=%d stdout=%s", code, &stdout)
+		}
+		secrets := []string{"fixture-token"}
+		if args[0] == "auth" {
+			secrets = append(secrets, "fixture-password", "fixture-code")
+		}
+		for _, secret := range secrets {
+			if strings.Contains(stderr.String(), secret) {
+				t.Errorf("error exposes %s", secret)
+			}
+		}
+	}
+}
+
+func TestRawJSONInputForms(t *testing.T) {
+	const exact = `{ "id":9007199254740993, "id":1e100 }`
+	for _, tc := range []struct {
+		name, input   string
+		file, nonJSON bool
+	}{
+		{"data", exact, false, false}, {"file", exact, true, false},
+		{"null", "null", false, false}, {"non-JSON-response", exact, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			baseURL := httpFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil || string(body) != tc.input {
+					t.Errorf("body=%q error=%v", body, err)
+				}
+				response := tc.input
+				if tc.nonJSON {
+					response = "not JSON"
+				}
+				_, _ = io.WriteString(w, response)
+			}))
+			args := []string{"--config", filepath.Join(t.TempDir(), "config.yaml"), "--base-url", baseURL, "raw", "POST", "/", "--json"}
+			if tc.file {
+				path := filepath.Join(t.TempDir(), "body.json")
+				if err := os.WriteFile(path, []byte(tc.input), 0600); err != nil {
+					t.Fatal(err)
+				}
+				args = append(args, "--file", path)
+			} else {
+				args = append(args, "--data", tc.input)
+			}
+			var stdout, stderr bytes.Buffer
+			code := Execute(context.Background(), args, strings.NewReader(""), &stdout, &stderr)
+			if tc.nonJSON {
+				if code != exitErr || stdout.Len() != 0 || stderr.Len() == 0 {
+					t.Errorf("code=%d stdout=%s stderr=%s", code, &stdout, &stderr)
+				}
+			} else if code != exitOK || stdout.String() != tc.input+"\n" || stderr.Len() != 0 {
+				t.Errorf("code=%d stdout=%s stderr=%s", code, &stdout, &stderr)
+			}
+		})
+	}
+}
+
+func TestCanceledLANCommands(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, args := range [][]string{{"lan", "status", "127.0.0.1"}, {"lan", "discover", "--address", "127.0.0.1"}} {
+		var stdout, stderr bytes.Buffer
+		code := Execute(ctx, append([]string{"--config", filepath.Join(t.TempDir(), "config.yaml")}, args...), strings.NewReader(""), &stdout, &stderr)
+		if code != exitErr || stdout.Len() != 0 || !strings.Contains(stderr.String(), "context canceled") {
+			t.Errorf("code=%d stdout=%s stderr=%s", code, &stdout, &stderr)
+		}
+	}
+}
 
 func TestVersionJSON(t *testing.T) {
 	var stdout, stderr bytes.Buffer

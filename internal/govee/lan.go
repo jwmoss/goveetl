@@ -1,6 +1,7 @@
 package govee
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -35,15 +36,21 @@ type lanPacket struct {
 
 // Scan accepts a device IP when multicast does not cross the local network.
 func (l *LANSocket) Scan(target string, timeout time.Duration) ([]LANNamedDevice, error) {
+	return l.ScanContext(context.Background(), target, timeout)
+}
+func (l *LANSocket) ScanContext(ctx context.Context, target string, timeout time.Duration) ([]LANNamedDevice, error) {
 	if target == "" {
 		target = "239.255.255.250"
 	}
-	return l.exchange(target, l.ScanPort, LANMessage{Cmd: "scan", Data: map[string]string{"account_topic": "reserve"}}, timeout)
+	return l.exchange(ctx, target, l.ScanPort, LANMessage{Cmd: "scan", Data: map[string]string{"account_topic": "reserve"}}, timeout)
 }
 
 // Control returns a matching reply. Mutation commands may not acknowledge receipt.
 func (l *LANSocket) Control(ip string, message LANMessage, wait time.Duration) ([]byte, error) {
-	replies, err := l.exchange(ip, l.ControlPort, message, wait)
+	return l.ControlContext(context.Background(), ip, message, wait)
+}
+func (l *LANSocket) ControlContext(ctx context.Context, ip string, message LANMessage, wait time.Duration) ([]byte, error) {
+	replies, err := l.exchange(ctx, ip, l.ControlPort, message, wait)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +63,10 @@ func (l *LANSocket) Control(ip string, message LANMessage, wait time.Duration) (
 	return json.Marshal(lanPacket{Message: replies[0].Message})
 }
 
-func (l *LANSocket) exchange(target string, port int, message LANMessage, wait time.Duration) ([]LANNamedDevice, error) {
+func (l *LANSocket) exchange(ctx context.Context, target string, port int, message LANMessage, wait time.Duration) ([]LANNamedDevice, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	ip := net.ParseIP(target)
 	if ip == nil || ip.To4() == nil {
 		return nil, fmt.Errorf("lan: expected an IPv4 address")
@@ -81,7 +91,16 @@ func (l *LANSocket) exchange(target string, port int, message LANMessage, wait t
 		return nil, fmt.Errorf("lan: listen on UDP 4002: %w", err)
 	}
 	defer sock.Close()
-	if err = sock.SetDeadline(time.Now().Add(wait)); err != nil {
+	deadline := time.Now().Add(wait)
+	if limit, ok := ctx.Deadline(); ok && limit.Before(deadline) {
+		deadline = limit
+	}
+	stop := context.AfterFunc(ctx, func() { _ = sock.SetDeadline(time.Now()) })
+	defer stop()
+	if err = sock.SetDeadline(deadline); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if _, err = sock.WriteToUDP(payload, &net.UDPAddr{IP: ip, Port: port}); err != nil {
@@ -93,6 +112,12 @@ func (l *LANSocket) exchange(target string, port int, message LANMessage, wait t
 	for {
 		n, addr, err := sock.ReadFromUDP(buf)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if limit, ok := ctx.Deadline(); ok && !time.Now().Before(limit) {
+				return nil, context.DeadlineExceeded
+			}
 			if os.IsTimeout(err) {
 				return replies, nil
 			}

@@ -63,7 +63,7 @@ func doctorCheckOpenAPI(rc *runtime, ctx context.Context) doctorResult {
 	if !out.Configured {
 		return out
 	}
-	client := rc.tracelessClient(rc.cfg.OpenAPIBaseURL, "Govee-API-Key", "", rc.cfg.APIKey)
+	client := rc.diagnosticClient(rc.cfg.OpenAPIBaseURL, "Govee-API-Key", "", rc.cfg.APIKey)
 	start := time.Now()
 	_, err := client.Do(ctx, http.MethodGet, "/router/api/v1/user/devices", nil, nil)
 	out = fin(out, err, start)
@@ -117,11 +117,8 @@ func fin(started doctorResult, err error, _ time.Time) doctorResult {
 	return started
 }
 
-// tracelessClient builds a client without HTTP tracing for doctor checks.
-func (rc *runtime) tracelessClient(baseURL, header, scheme, token string) *api.Client {
-	return api.New(baseURL,
-		api.WithTimeout(rc.g.timeout),
-		api.WithAuth(header, scheme, token),
-		api.WithUserAgent("goveetl/"+version),
-	)
+// diagnosticClient applies the selected timeout and trace options.
+func (rc *runtime) diagnosticClient(baseURL, header, scheme, token string) *api.Client {
+	options := append([]api.Option{api.WithAuth(header, scheme, token)}, rc.providerOptions()...)
+	return api.New(baseURL, options...)
 }

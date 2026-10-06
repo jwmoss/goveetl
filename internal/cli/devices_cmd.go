@@ -352,6 +352,8 @@ type mqttCmdInput struct {
 
 // mqttControl sends one MQTT control envelope for a wifi device.
 func mqttControl(rc *runtime, ctx context.Context, in mqttCmdInput) error {
+	ctx, cancel := context.WithTimeout(ctx, rc.g.timeout)
+	defer cancel()
 	if err := rc.requireToken(); err != nil {
 		return err
 	}
@@ -379,11 +381,11 @@ func mqttControl(rc *runtime, ctx context.Context, in mqttCmdInput) error {
 		return err
 	}
 	sender := &govee.MqttSender{AccountTopic: rc.cfg.AccountTopic, AccountID: rc.cfg.AccountID, ClientID: actor}
-	if err := sender.Connect(cert.Endpoint, []byte(cert.CertificatePem), []byte(cert.PrivateKey)); err != nil {
+	if err := sender.ConnectContext(ctx, cert.Endpoint, []byte(cert.CertificatePem), []byte(cert.PrivateKey)); err != nil {
 		return err
 	}
 	defer sender.Disconnect()
-	return sender.SendRaw(topic, envelope)
+	return sender.SendRawContext(ctx, topic, envelope)
 }
 
 // mqttActorID mirrors the app clientId: "AP/<accountId>/a_<deviceUuid>".

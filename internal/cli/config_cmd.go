@@ -91,7 +91,7 @@ func setConfigKey(cfg *config.Config, key, value string) error {
 	case "account_id":
 		parsed, err := strconv.Atoi(value)
 		if err != nil {
-			return fmt.Errorf("account_id must be a number")
+			return fmt.Errorf("%w: account_id must be a number", errUsage)
 		}
 		cfg.AccountID = parsed
 	case "client_id":
@@ -119,14 +119,16 @@ func newConfigShowCommand(rc *runtime) *cobra.Command {
 				cfg.BaseURL = rc.g.baseURL
 			}
 			if rc.out.IsJSON() {
-				return rc.out.JSON(cfg.Redacted())
+				payload := cfg.Redacted()
+				payload["path"] = selectedConfigPath(rc)
+				return rc.out.JSON(payload)
 			}
 			rc.out.Table([]string{"KEY", "VALUE"}, [][]string{
 				{"base_url", cfg.BaseURL},
 				{"token", cfg.Redacted()["token"]},
 				{"auth_header", cfg.AuthHeader},
 				{"auth_scheme", cfg.AuthScheme},
-				{"path", config.DefaultPath()},
+				{"path", selectedConfigPath(rc)},
 			})
 			return nil
 		},
@@ -147,9 +149,6 @@ func newConfigInitCommand(rc *runtime) *cobra.Command {
 			if path == "" {
 				path = config.DefaultPath()
 			}
-			if !force && fileExists(path) {
-				return fmt.Errorf("config already exists at %s; use --force to overwrite", path)
-			}
 			cfg := config.Default()
 			if baseURL != "" {
 				cfg.BaseURL = baseURL
@@ -161,8 +160,15 @@ func newConfigInitCommand(rc *runtime) *cobra.Command {
 				}
 				cfg.Token = strings.TrimSpace(string(data))
 			}
-			if err := config.Save(path, cfg); err != nil {
+			save := config.SaveNew
+			if force {
+				save = config.Save
+			}
+			if err := save(path, cfg); err != nil {
 				return err
+			}
+			if rc.out.IsJSON() {
+				return rc.out.JSON(map[string]string{"path": path, "status": "created"})
 			}
 			rc.out.Success("config written")
 			rc.out.Printf("%s\n", path)
@@ -173,4 +179,11 @@ func newConfigInitCommand(rc *runtime) *cobra.Command {
 	cmd.Flags().BoolVar(&tokenStdin, "token-stdin", false, "read token from stdin and store it in the config file")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing config file")
 	return cmd
+}
+
+func selectedConfigPath(rc *runtime) string {
+	if rc.g.configPath != "" {
+		return rc.g.configPath
+	}
+	return config.DefaultPath()
 }

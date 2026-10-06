@@ -2,6 +2,7 @@ package output
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -33,5 +34,17 @@ func TestTermDumbDisablesColor(t *testing.T) {
 	formatter.Success("saved")
 	if strings.Contains(stdout.String(), "\x1b[") {
 		t.Fatalf("stdout contains color escape: %q", stdout.String())
+	}
+}
+
+func TestRawJSONExact(t *testing.T) {
+	const raw = `{ "id":9007199254740993, "id":1e100 }`
+	var stdout bytes.Buffer
+	f := New(&stdout, &bytes.Buffer{}, true, false, false, true)
+	if err := f.JSON(json.RawMessage(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.String() != raw+"\n" {
+		t.Fatalf("raw output = %q", stdout.String())
 	}
 }

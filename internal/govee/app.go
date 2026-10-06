@@ -17,7 +17,8 @@ import (
 // App talks to the private REST API the Govee Home app uses (app2.govee.com
 // /bff-app/... surface) with a captured Bearer token.
 type App struct {
-	client *api.Client
+	client  *api.Client
+	options []api.Option
 	// Headers mirrors AppHeader.getAppHeaders() from the app.
 	headers http.Header
 }
@@ -35,7 +36,7 @@ type AppHeaders struct {
 }
 
 // NewApp builds the app API client against the given base URL.
-func NewApp(baseURL, token, version string, h AppHeaders) *App {
+func NewApp(baseURL, token, version string, h AppHeaders, opts ...api.Option) *App {
 	headers := http.Header{}
 	headers.Set("timestamp", fmt.Sprint(time.Now().UnixMilli()))
 	headers.Set("country", h.Country)
@@ -50,7 +51,8 @@ func NewApp(baseURL, token, version string, h AppHeaders) *App {
 	headers.Set("sysVersion", h.SysVersion)
 	headers.Set("iotVersion", def(h.IotVersion, "6"))
 	headers.Set("clientType", "0")
-	return &App{client: api.New(baseURL, api.WithAuth("Authorization", "Bearer", token), api.WithTimeout(30*time.Second)), headers: headers}
+	options := append([]api.Option{api.WithAuth("Authorization", "Bearer", token)}, opts...)
+	return &App{client: api.New(baseURL, options...), headers: headers, options: options}
 }
 
 func def(v, fallback string) string {
@@ -86,13 +88,14 @@ func (a *App) Do(ctx context.Context, method, path string, query map[string][]st
 		Message string `json:"message"`
 	}
 	if json.Unmarshal(data, &env) == nil && env.Status != nil && *env.Status != 200 {
-		return data, &Error{Status: *env.Status, Message: env.Message}
+		return data, a.client.RedactError(&Error{Status: *env.Status, Message: env.Message})
 	}
 	return data, nil
 }
 
 // Refresh exchanges a refresh token for a fresh bundle.
-func (a *App) Refresh(ctx context.Context, refreshToken string) (*LoginData, error) {
+func (a *App) Refresh(ctx context.Context, refreshToken string) (session *LoginData, err error) {
+	defer func() { err = a.client.RedactError(err, refreshToken) }()
 	req := RefreshTokenRequest{RefreshToken: refreshToken}
 	data, err := a.Do(ctx, http.MethodPost, "/bff-app/v2/account/refresh-token", nil, req)
 	if err != nil {
@@ -183,14 +186,17 @@ func (a *App) GroupControl(ctx context.Context, req GroupControlRequest) error {
 
 // DeviceTopic resolves the per-device MQTT publish topic
 // (POST device/rest/devices/v1/appDeviceTopic on the device host).
-func (a *App) DeviceTopic(ctx context.Context, sku, device, deviceBaseURL string) (string, error) {
+func (a *App) DeviceTopic(ctx context.Context, sku, device, deviceBaseURL string) (topic string, err error) {
+	defer func() { err = a.client.RedactError(err) }()
 	body := struct {
 		Transaction string `json:"transaction"`
 		Sku         string `json:"sku"`
 		Device      string `json:"device"`
 	}{Transaction: uuid.NewString(), Sku: sku, Device: device}
 	if deviceBaseURL != "" && deviceBaseURL != a.client.BaseURL() {
-		data, httpErr := a.client.DoWithHeaders(ctx, http.MethodPost, deviceBaseURL+"/device/rest/devices/v1/appDeviceTopic", nil, body, a.headers)
+		// The configured device host has its own credential scope.
+		client := api.New(deviceBaseURL, a.options...)
+		data, httpErr := client.DoWithHeaders(ctx, http.MethodPost, "/device/rest/devices/v1/appDeviceTopic", nil, body, a.headers)
 		if httpErr != nil {
 			return "", httpErr
 		}

@@ -14,11 +14,32 @@ import (
 	"github.com/jwmoss/goveetl/internal/config"
 )
 
+// Keep HTTP tests at the HTTP boundary without a listening socket.
+func httpFixture(t *testing.T, handler http.Handler) string {
+	t.Helper()
+	for _, key := range []string{"TOKEN", "API_KEY", "REFRESH_TOKEN", "PASSWORD", "VERIFICATION_CODE", "LAN_KEY"} {
+		t.Setenv("GOVEETL_"+key, "")
+	}
+	previous := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = previous })
+	http.DefaultTransport = fixtureTransport(func(r *http.Request) (*http.Response, error) {
+		if r.Body == nil {
+			r.Body = http.NoBody
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, r)
+		result := response.Result()
+		result.Request = r
+		return result, nil
+	})
+	return "http://localhost"
+}
+
 func TestAuthLogin(t *testing.T) {
 	for _, name := range []string{"stdin", "environment", "verification-code", "verification-required", "wrong-password", "incomplete-session", "invalid-session", "missing-password", "missing-email", "redirect", "insecure-endpoint"} {
 		t.Run(name, func(t *testing.T) {
 			logins, checks, verificationRequests := 0, 0, 0
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			baseURL := httpFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/account/rest/account/v2/login":
 					logins++
@@ -69,11 +90,10 @@ func TestAuthLogin(t *testing.T) {
 					t.Errorf("unexpected endpoint: %s", r.URL.Path)
 				}
 			}))
-			defer server.Close()
 			for _, key := range []string{"TOKEN", "REFRESH_TOKEN", "EMAIL", "PASSWORD", "VERIFICATION_CODE", "CLIENT_ID", "ACCOUNT_ID", "ACCOUNT_TOPIC"} {
 				t.Setenv("GOVEETL_"+key, "")
 			}
-			t.Setenv("GOVEETL_BASE_URL", server.URL)
+			t.Setenv("GOVEETL_BASE_URL", baseURL)
 			if name == "insecure-endpoint" {
 				t.Setenv("GOVEETL_BASE_URL", "http://govee.invalid")
 			}
@@ -137,7 +157,7 @@ func TestAuthLogin(t *testing.T) {
 func TestAuthRefresh(t *testing.T) {
 	for _, name := range []string{"rotated", "rejected", "empty-token"} {
 		t.Run(name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			baseURL := httpFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var body struct {
 					RefreshToken string
 					Type         int
@@ -154,11 +174,10 @@ func TestAuthRefresh(t *testing.T) {
 					_, _ = w.Write([]byte(`{"status":200,"data":{}}`))
 				}
 			}))
-			defer server.Close()
 			for _, key := range []string{"TOKEN", "REFRESH_TOKEN", "EMAIL", "CLIENT_ID", "ACCOUNT_ID", "ACCOUNT_TOPIC"} {
 				t.Setenv("GOVEETL_"+key, "")
 			}
-			t.Setenv("GOVEETL_BASE_URL", server.URL)
+			t.Setenv("GOVEETL_BASE_URL", baseURL)
 			path := filepath.Join(t.TempDir(), "config.yaml")
 			cfg := config.Default()
 			cfg.Token, cfg.RefreshToken, cfg.ClientID = "test-old-token", "test-refresh", "test-client"

@@ -183,6 +183,11 @@ The config file has mode 0600. Its default path follows the operating system:
 
 Use `--config` for another path. Precedence: flags, environment, config file, defaults.
 
+`config show` reports the selected path. `config init --json` returns the path and status.
+Config and session writes use a private temporary file, then replace the selected file.
+The CLI rejects symbolic links and other non-regular destination files.
+Without `--force`, config initialization cannot replace a file that another process creates.
+
 Keys: `base_url`, `openapi_base_url`, `device_base_url`, `api_key`, `token`,
 `refresh_token`, `account_topic`, `account_id`, `client_id`, `email`, `iot_version`.
 Environment variables use uppercase keys with the `GOVEETL_` prefix.
@@ -203,6 +208,16 @@ goveetl raw GET /bff-app/v1/general-control/list --backend app --query filterEmp
 
 `--dry-run` blocks every non-GET raw request.
 
+Raw JSON preserves large integers, duplicate keys, and exponent notation.
+Use one of `--data` or `--file` for a JSON request body.
+With `--json`, a non-JSON response returns exit code 1 with no response on stdout.
+
+The client sends credentials and extra request headers only to the configured origin.
+The origin includes the scheme, hostname, and port.
+The configured device host has a separate credential scope for MQTT topic requests.
+The client refuses redirects to another origin. Login and email verification refuse all redirects.
+Errors and HTTP traces redact known credentials. HTTP responses have a 64 MiB limit.
+
 ## Verification and limits
 
 Live verification covers password login with email verification, saved-session access,
@@ -222,6 +237,14 @@ Private API evidence comes from Govee Home 7.6.21. Use the tool with devices you
 `--timeout`, `--trace-http`, `--dry-run`, `--no-input`.
 
 Exit codes: 0 for success, 1 for runtime errors or dry-run refusal, 2 for invalid usage.
+
+Use one of `--json` or `--plain`. Commands reject extra positional arguments.
+`--timeout` must be positive. It applies to app, account, official API, MQTT, and LAN operations.
+LAN waits also honor `--wait`. MQTT watch uses `--timeout` for connection setup and `--duration` for the stream.
+`--trace-http` covers each HTTP client and writes diagnostics to stderr.
+
+The root `--version` flag works without a valid config file.
+Version output uses module and VCS build information when release metadata is absent.
 
 ## Development and release
 

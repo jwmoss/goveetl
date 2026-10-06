@@ -70,3 +70,42 @@ func TestAppHostDefaultsAndLegacyConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestSavePrivateReplacement(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	path := filepath.Join(dir, "config.yaml")
+	original := []byte("original")
+	if err := os.WriteFile(target, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, Default()); err == nil {
+		t.Error("Save followed symlink")
+	}
+	data, _ := os.ReadFile(target)
+	if string(data) != string(original) {
+		t.Error("symlink target changed")
+	}
+	info, _ := os.Stat(target)
+	if info.Mode().Perm() != 0644 {
+		t.Error("symlink target permissions changed")
+	}
+	_ = os.Remove(path)
+	if err := os.Link(target, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, Default()); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(target)
+	if string(data) != string(original) {
+		t.Error("hardlink target changed")
+	}
+	info, _ = os.Stat(target)
+	if info.Mode().Perm() != 0644 {
+		t.Error("hardlink target permissions changed")
+	}
+}
