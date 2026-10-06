@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -136,7 +137,9 @@ func newMqttWatchCommand(rc *runtime) *cobra.Command {
 				AccountID:    rc.cfg.AccountID,
 				ClientID:     actor,
 			}
-			connectErr := sender.Connect(mqttEndpoint, []byte(cert.CertificatePem), []byte(cert.PrivateKey), rc.cfg.AccountTopic)
+			connectCtx, cancel := context.WithTimeout(ctx, rc.g.timeout)
+			connectErr := sender.ConnectContext(connectCtx, mqttEndpoint, []byte(cert.CertificatePem), []byte(cert.PrivateKey), rc.cfg.AccountTopic)
+			cancel()
 			if connectErr != nil {
 				return connectErr
 			}

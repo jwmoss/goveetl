@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -19,7 +20,10 @@ const (
 	DefaultUserAgent  = "goveetl/dev"
 )
 
+const maxResponseBytes = 64 << 20
+
 type Client struct {
+	secrets    []string
 	baseURL    string
 	token      string
 	authHeader string
@@ -35,7 +39,8 @@ type Option func(*Client)
 func WithHTTPClient(httpClient *http.Client) Option {
 	return func(c *Client) {
 		if httpClient != nil {
-			c.httpClient = httpClient
+			clone := *httpClient
+			c.httpClient = &clone
 		}
 	}
 }
@@ -45,6 +50,13 @@ func WithTimeout(timeout time.Duration) Option {
 		if timeout > 0 {
 			c.httpClient.Timeout = timeout
 		}
+	}
+}
+
+// WithNoRedirects prevents the client from forwarding a request body.
+func WithNoRedirects() Option {
+	return func(c *Client) {
+		c.httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	}
 }
 
@@ -91,6 +103,20 @@ func New(baseURL string, opts ...Option) *Client {
 	for _, opt := range opts {
 		opt(c)
 	}
+
+	redirect := c.httpClient.CheckRedirect
+	c.httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		if len(via) > 0 && !sameOrigin(req.URL, via[0].URL) {
+			return fmt.Errorf("refusing cross-origin redirect")
+		}
+		if redirect != nil {
+			return redirect(req, via)
+		}
+		return nil
+	}
 	return c
 }
 
@@ -114,35 +140,63 @@ func (c *Client) Do(ctx context.Context, method, requestPath string, query url.V
 }
 
 func (c *Client) DoWithHeaders(ctx context.Context, method, requestPath string, query url.Values, body any, extra http.Header) ([]byte, error) {
+	secrets := append([]string{c.token}, c.secrets...)
+	for key, values := range extra {
+		key = strings.ToLower(key)
+		if strings.EqualFold(key, c.authHeader) || key == "authorization" || key == "cookie" ||
+			strings.Contains(key, "key") || strings.Contains(key, "token") ||
+			strings.Contains(key, "session") || strings.Contains(key, "secret") || strings.Contains(key, "password") {
+			secrets = append(secrets, values...)
+		}
+	}
+	redactError := func(err error) error {
+		if err == nil {
+			return nil
+		}
+		return &redactedError{err: err, secrets: secrets}
+	}
 	method = strings.ToUpper(strings.TrimSpace(method))
 	if method == "" {
 		return nil, fmt.Errorf("method is required")
 	}
 	if c.dryRun && method != http.MethodGet {
-		return nil, fmt.Errorf("dry-run: refusing %s %s", method, requestPath)
+		return nil, redactError(fmt.Errorf("dry-run: refusing %s %s", method, requestPath))
 	}
 
 	endpoint, err := c.url(requestPath, query)
 	if err != nil {
-		return nil, err
+		return nil, redactError(err)
 	}
 
 	var reader io.Reader
 	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return nil, fmt.Errorf("encode request body: %w", err)
+		var data []byte
+		var err error
+		if raw, ok := body.(json.RawMessage); ok {
+			if !json.Valid(raw) {
+				return nil, fmt.Errorf("encode request body: invalid JSON")
+			}
+			data = raw
+		} else {
+			data, err = json.Marshal(body)
 		}
+		if err != nil {
+			return nil, redactError(fmt.Errorf("encode request body: %w", err))
+		}
+		secrets = append(secrets, bodySecrets(data)...)
 		reader = bytes.NewReader(data)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return nil, redactError(fmt.Errorf("create request: %w", err))
 	}
-	for key, values := range extra {
-		for _, value := range values {
-			req.Header.Add(key, value)
+	base, _ := url.Parse(c.baseURL)
+	if sameOrigin(req.URL, base) {
+		for key, values := range extra {
+			for _, value := range values {
+				req.Header.Add(key, value)
+			}
 		}
 	}
 	req.Header.Set("Accept", "application/json")
@@ -150,7 +204,7 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, requestPath string, 
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.token != "" && c.authHeader != "" {
+	if c.token != "" && c.authHeader != "" && sameOrigin(req.URL, base) {
 		value := c.token
 		if c.authScheme != "" {
 			value = c.authScheme + " " + c.token
@@ -161,24 +215,27 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, requestPath string, 
 	start := time.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, redactError(fmt.Errorf("request failed: %w", err))
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, redactError(fmt.Errorf("read response: %w", err))
+	}
+	if len(data) > maxResponseBytes {
+		return nil, fmt.Errorf("response exceeds the 64 MiB limit")
 	}
 	if c.trace != nil {
-		c.trace(method, req.URL.Path, resp.StatusCode, time.Since(start))
+		c.trace(method, redact(req.URL.Path, secrets...), resp.StatusCode, time.Since(start))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return data, &APIError{
 			Status:  resp.StatusCode,
 			Method:  method,
-			Path:    req.URL.Path,
-			Body:    data,
-			Message: extractErrorMessage(data),
+			Path:    redact(req.URL.Path, secrets...),
+			Body:    []byte(redact(string(data), secrets...)),
+			Message: redact(extractErrorMessage(data), secrets...),
 		}
 	}
 	return data, nil
@@ -281,4 +338,83 @@ func (c *Client) GetResource(ctx context.Context, id string) (*Resource, error) 
 		return nil, err
 	}
 	return &resource, nil
+}
+
+// WithSecrets adds credentials that must not appear in errors or traces.
+func WithSecrets(secrets ...string) Option {
+	return func(c *Client) { c.secrets = append(c.secrets, secrets...) }
+}
+
+// RedactError preserves the original error for errors.Is and errors.As.
+func (c *Client) RedactError(err error, secrets ...string) error {
+	if err == nil {
+		return nil
+	}
+	all := append([]string{c.token}, c.secrets...)
+	return &redactedError{err: err, secrets: append(all, secrets...)}
+}
+
+type redactedError struct {
+	err     error
+	secrets []string
+}
+
+func (e *redactedError) Error() string { return redact(e.err.Error(), e.secrets...) }
+func (e *redactedError) Unwrap() error { return e.err }
+func redact(message string, secrets ...string) string {
+	values := append([]string(nil), secrets...)
+	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
+	for _, secret := range values {
+		if secret == "" {
+			continue
+		}
+		for _, value := range []string{secret, url.QueryEscape(secret), url.PathEscape(secret)} {
+			message = strings.ReplaceAll(message, value, "[REDACTED]")
+		}
+	}
+	return message
+}
+func bodySecrets(data []byte) []string {
+	var value any
+	if json.Unmarshal(data, &value) != nil {
+		return nil
+	}
+	var secrets []string
+	var visit func(any)
+	visit = func(v any) {
+		switch v := v.(type) {
+		case map[string]any:
+			for key, val := range v {
+				k := strings.ToLower(strings.ReplaceAll(key, "_", ""))
+				if k == "password" || k == "code" || strings.Contains(k, "token") || strings.Contains(k, "apikey") || k == "privatekey" {
+					if text, ok := val.(string); ok {
+						secrets = append(secrets, text)
+					}
+				} else {
+					visit(val)
+				}
+			}
+		case []any:
+			for _, val := range v {
+				visit(val)
+			}
+		}
+	}
+	visit(value)
+	return secrets
+}
+func sameOrigin(a, b *url.URL) bool {
+	return a != nil && b != nil && strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Hostname(), b.Hostname()) && effectivePort(a) == effectivePort(b)
+}
+func effectivePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		if normalized := strings.TrimLeft(port, "0"); normalized != "" {
+			return normalized
+		}
+		return "0"
+	}
+	if strings.EqualFold(u.Scheme, "https") {
+		return "443"
+	}
+	return "80"
 }

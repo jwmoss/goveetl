@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -72,7 +73,8 @@ func Execute(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		if !errors.Is(err, errSilent) {
 			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		}
-		if errors.Is(err, errUsage) {
+		_, _, findErr := cmd.Find(args)
+		if errors.Is(err, errUsage) || findErr != nil {
 			return exitUsage
 		}
 		return exitErr
@@ -86,6 +88,7 @@ func newRootCommand(rc *runtime) *cobra.Command {
 		Short:         "Command-line client for Govee cloud, app, and LAN APIs",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if rc.g.showVersion {
 				return rc.writeVersion()
@@ -94,20 +97,31 @@ func newRootCommand(rc *runtime) *cobra.Command {
 			return errUsage
 		},
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if err := cmd.ValidateFlagGroups(); err != nil {
+				return fmt.Errorf("%w: %v", errUsage, err)
+			}
+			if rc.g.asJSON && rc.g.plain {
+				return fmt.Errorf("%w: choose only one of --json or --plain", errUsage)
+			}
+			if rc.g.timeout <= 0 {
+				return fmt.Errorf("%w: --timeout must be positive", errUsage)
+			}
+			rc.out = output.New(rc.stdout, rc.stderr, rc.g.asJSON, rc.g.plain, rc.g.quiet, rc.g.noColor)
 			if rc.g.dryRun {
 				switch cmd.Name() {
 				case "control", "login", "refresh", "logout", "set", "init", "remove-device":
 					return fmt.Errorf("dry-run: refusing %s", cmd.CommandPath())
 				}
 			}
-			if commandSkipsClient(cmd) {
-				rc.out = output.New(rc.stdout, rc.stderr, rc.g.asJSON, rc.g.plain, rc.g.quiet, rc.g.noColor)
+			if commandSkipsClient(cmd) || (cmd == cmd.Root() && rc.g.showVersion) {
 				return nil
 			}
 			return rc.initClient()
 		},
 	}
 
+	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error { return fmt.Errorf("%w: %v", errUsage, err) })
+	root.Flags().BoolVar(&rc.g.showVersion, "version", false, "print version and exit")
 	flags := root.PersistentFlags()
 	flags.StringVar(&rc.g.configPath, "config", "", "config file path")
 	flags.StringVar(&rc.g.baseURL, "base-url", "", "API base URL override")
@@ -115,7 +129,6 @@ func newRootCommand(rc *runtime) *cobra.Command {
 	flags.BoolVar(&rc.g.plain, "plain", false, "emit stable plain text where available")
 	flags.BoolVarP(&rc.g.quiet, "quiet", "q", false, "suppress non-essential output")
 	flags.BoolVar(&rc.g.noColor, "no-color", false, "disable color")
-	flags.BoolVar(&rc.g.showVersion, "version", false, "print version and exit")
 	flags.DurationVar(&rc.g.timeout, "timeout", 30*time.Second, "HTTP timeout")
 	flags.BoolVar(&rc.g.traceHTTP, "trace-http", false, "log HTTP requests to stderr without secrets")
 	flags.BoolVar(&rc.g.dryRun, "dry-run", false, "refuse mutations and non-GET raw requests")
@@ -135,13 +148,24 @@ func newRootCommand(rc *runtime) *cobra.Command {
 	root.AddCommand(newLanCommand(rc))
 	root.AddCommand(newCompletionCommand(root))
 
+	// Commands without positional parameters reject extra arguments before any side effects.
+	var validate func(*cobra.Command)
+	validate = func(cmd *cobra.Command) {
+		if !cmd.Runnable() && cmd.HasSubCommands() {
+			cmd.RunE = func(cmd *cobra.Command, args []string) error { return cmd.Help() }
+		}
+		if cmd.Args == nil {
+			cmd.Args = usageArgs(cobra.NoArgs)
+		}
+		for _, child := range cmd.Commands() {
+			validate(child)
+		}
+	}
+	validate(root)
 	return root
 }
 
 func (rc *runtime) initClient() error {
-	if rc.g.asJSON && rc.g.plain {
-		return fmt.Errorf("%w: choose only one of --json or --plain", errUsage)
-	}
 	cfg, err := config.Load(rc.g.configPath)
 	if err != nil {
 		return err
@@ -155,21 +179,29 @@ func (rc *runtime) initClient() error {
 	rc.cfg = cfg
 	rc.out = output.New(rc.stdout, rc.stderr, rc.g.asJSON, rc.g.plain, rc.g.quiet, rc.g.noColor)
 	options := []api.Option{
-		api.WithTimeout(rc.g.timeout),
 		api.WithAuth(cfg.AuthHeader, cfg.AuthScheme, cfg.Token),
 		api.WithDryRun(rc.g.dryRun),
-		api.WithUserAgent("goveetl/" + version),
 	}
+	options = append(options, rc.providerOptions()...)
+	rc.client = api.New(cfg.BaseURL, options...)
+	return nil
+}
+
+func (rc *runtime) providerOptions() []api.Option {
+	v, _, _ := currentVersion()
+	options := []api.Option{api.WithTimeout(rc.g.timeout), api.WithUserAgent("goveetl/" + v), api.WithSecrets(rc.cfg.Token, rc.cfg.APIKey, rc.cfg.RefreshToken, rc.cfg.LANKey)}
 	if rc.g.traceHTTP {
 		options = append(options, api.WithTrace(func(method, path string, status int, duration time.Duration) {
 			_, _ = fmt.Fprintf(rc.stderr, "[http] %s %s -> %d (%s)\n", method, path, status, duration)
 		}))
 	}
-	rc.client = api.New(cfg.BaseURL, options...)
-	return nil
+	return options
 }
 
 func commandSkipsClient(cmd *cobra.Command) bool {
+	if cmd.HasSubCommands() {
+		return true
+	}
 	for cmd != nil {
 		switch cmd.Name() {
 		case "completion", "config", "help", "version":
@@ -190,22 +222,40 @@ func newVersionCommand(rc *runtime) *cobra.Command {
 	}
 }
 
+func currentVersion() (string, string, string) {
+	v, c, d := version, commit, date
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if v == "dev" && info.Main.Version != "" && info.Main.Version != "(devel)" {
+			v = info.Main.Version
+		}
+		for _, setting := range info.Settings {
+			if c == "unknown" && setting.Key == "vcs.revision" {
+				c = setting.Value
+			}
+			if d == "unknown" && setting.Key == "vcs.time" {
+				d = setting.Value
+			}
+		}
+	}
+	return v, c, d
+}
 func (rc *runtime) writeVersion() error {
+	v, c, d := currentVersion()
 	payload := map[string]string{
-		"version": version,
-		"commit":  commit,
-		"date":    date,
+		"version": v,
+		"commit":  c,
+		"date":    d,
 	}
 	if rc.out.IsJSON() {
 		return rc.out.JSON(payload)
 	}
 	if rc.out.IsPlain() {
-		rc.out.Printf("%s\n", version)
+		rc.out.Printf("%s\n", v)
 		return nil
 	}
-	rc.out.Printf("goveetl version %s\n", version)
-	rc.out.Printf("commit: %s\n", commit)
-	rc.out.Printf("built:  %s\n", date)
+	rc.out.Printf("goveetl version %s\n", v)
+	rc.out.Printf("commit: %s\n", c)
+	rc.out.Printf("built:  %s\n", d)
 	return nil
 }
 

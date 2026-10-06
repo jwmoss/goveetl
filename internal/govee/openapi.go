@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -25,12 +24,9 @@ type OpenAPI struct {
 }
 
 // NewOpenAPI targets the official endpoint with a Govee API key.
-func NewOpenAPI(baseURL, apiKey string) *OpenAPI {
-	return &OpenAPI{client: api.New(baseURL,
-		api.WithAuth("Govee-API-Key", "", apiKey),
-		api.WithTimeout(30*time.Second),
-		api.WithUserAgent("goveetl/1"),
-	)}
+func NewOpenAPI(baseURL, apiKey string, opts ...api.Option) *OpenAPI {
+	options := append([]api.Option{api.WithAuth("Govee-API-Key", "", apiKey), api.WithUserAgent("goveetl/1")}, opts...)
+	return &OpenAPI{client: api.New(baseURL, options...)}
 }
 
 // OpenAPICapability is one capability entry as returned by the device list
@@ -100,7 +96,7 @@ func (o *OpenAPI) unwrapCode(code int, message string) error {
 	if code == 0 || code == 200 {
 		return nil
 	}
-	return &Error{Status: code, Message: message}
+	return o.client.RedactError(&Error{Status: code, Message: message})
 }
 
 // ListDevices returns all devices with their capabilities.

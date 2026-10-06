@@ -1,7 +1,9 @@
-.PHONY: build test vet fmt tidy check clean release-snapshot
+.PHONY: build test vet fmt fmt-check tidy tidy-check check clean release-tool-check release-check release-snapshot
 
 BINARY ?= goveetl
 PKG := ./...
+GORELEASER_VERSION := $(shell cat .goreleaser-version)
+GORELEASER := goreleaser
 
 build:
 	mkdir -p bin
@@ -19,11 +21,22 @@ fmt:
 tidy:
 	go mod tidy
 
-check: fmt tidy vet test build
-	@if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git diff --exit-code -- go.mod go.sum; fi
+fmt-check:
+	@test -z "$$(gofmt -l $$(find . -name '*.go' -not -path './vendor/*' -not -path './node_modules/*'))"
 
-release-snapshot:
-	goreleaser release --snapshot --clean
+tidy-check:
+	go mod tidy -diff
+
+check: fmt-check tidy-check vet test build
+
+release-tool-check:
+	@$(GORELEASER) --version | grep -Eq "^GitVersion: +v?$(subst .,[.],$(GORELEASER_VERSION:v%=%))$$" || { echo "Install GoReleaser $(GORELEASER_VERSION)"; exit 1; }
+
+release-check: release-tool-check
+	$(GORELEASER) check || test "$$?" -eq 2
+
+release-snapshot: release-tool-check
+	$(GORELEASER) release --snapshot --clean
 
 clean:
 	rm -rf bin dist

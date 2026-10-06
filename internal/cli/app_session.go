@@ -11,7 +11,7 @@ import (
 )
 
 // appClient builds an App client for the configured app base URL. It adds
-// the Bearer token to every request.
+// the Bearer token to requests within that origin.
 func (rc *runtime) appClient(ctx context.Context) (*govee.App, error) {
 	cfg := rc.cfg
 	if cfg.ClientID == "" {
@@ -28,7 +28,7 @@ func (rc *runtime) appClient(ctx context.Context) (*govee.App, error) {
 		TimeZone: "UTC",
 	}
 	_ = ctx
-	return govee.NewApp(cfg.BaseURL, cfg.Token, headers.AppVersion, headers), nil
+	return govee.NewApp(cfg.BaseURL, cfg.Token, headers.AppVersion, headers, rc.providerOptions()...), nil
 }
 
 // openAPIClient builds the official API client with the stored API key.
@@ -37,7 +37,7 @@ func (rc *runtime) openAPIClient() (*govee.OpenAPI, error) {
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("please set an API key first: %s_API_KEY, config api_key, or goveetl config set api_key <key>", config.EnvPrefix)
 	}
-	return govee.NewOpenAPI(cfg.OpenAPIBaseURL, cfg.APIKey), nil
+	return govee.NewOpenAPI(cfg.OpenAPIBaseURL, cfg.APIKey, rc.providerOptions()...), nil
 }
 
 // saveSession persists login output into config.

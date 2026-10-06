@@ -1,6 +1,7 @@
 package govee
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -53,6 +54,12 @@ func WriteEnvelope(transaction, accountTopic, cmd string, cmdVersion int, data a
 
 // Connect establishes the MQTT session and optionally subscribes to topics.
 func (m *MqttSender) Connect(endpoint string, certificatePem, privateKeyPem []byte, subscribe ...string) error {
+	return m.ConnectContext(context.Background(), endpoint, certificatePem, privateKeyPem, subscribe...)
+}
+func (m *MqttSender) ConnectContext(ctx context.Context, endpoint string, certificatePem, privateKeyPem []byte, subscribe ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if endpoint == "" {
 		return fmt.Errorf("mqtt: endpoint required (fetch app/v1/account/iot/key)")
 	}
@@ -70,7 +77,8 @@ func (m *MqttSender) Connect(endpoint string, certificatePem, privateKeyPem []by
 		AddBroker(endpoint).
 		SetClientID(m.ClientID).
 		SetTLSConfig(&tls.Config{Certificates: []tls.Certificate{cert}}).
-		SetConnectTimeout(15 * time.Second).
+		SetConnectTimeout(mqttWait(ctx, 15*time.Second)).
+		SetWriteTimeout(mqttWait(ctx, 10*time.Second)).
 		SetCleanSession(true).
 		SetAutoReconnect(false).
 		SetKeepAlive(120 * time.Second)
@@ -79,11 +87,12 @@ func (m *MqttSender) Connect(endpoint string, certificatePem, privateKeyPem []by
 	}
 	client := mqtt.NewClient(opts)
 	token := client.Connect()
-	if !token.WaitTimeout(20 * time.Second) {
+	if err := waitMQTT(ctx, token, 20*time.Second); err != nil {
 		client.Disconnect(0)
-		return fmt.Errorf("mqtt: connect timeout (%s)", endpoint)
+		return fmt.Errorf("mqtt: connect timeout: %w", err)
 	}
 	if token.Error() != nil {
+		client.Disconnect(0)
 		return fmt.Errorf("mqtt: connect: %w", token.Error())
 	}
 	m.client = client
@@ -92,9 +101,9 @@ func (m *MqttSender) Connect(endpoint string, certificatePem, privateKeyPem []by
 			continue
 		}
 		tok := client.Subscribe(sub, 0, m.handler)
-		if !tok.WaitTimeout(10 * time.Second) {
+		if err := waitMQTT(ctx, tok, 10*time.Second); err != nil {
 			m.Disconnect()
-			return fmt.Errorf("mqtt: subscribe timeout %s", sub)
+			return fmt.Errorf("mqtt: subscribe timeout: %w", err)
 		}
 		if tok.Error() != nil {
 			m.Disconnect()
@@ -124,13 +133,25 @@ func (m *MqttSender) Write(cmd string, cmdVersion int, data any) error {
 
 // SendRaw publishes an arbitrary message to a topic (raw escape hatch).
 func (m *MqttSender) SendRaw(topic string, message any) error {
+	return m.SendRawContext(context.Background(), topic, message)
+}
+func (m *MqttSender) SendRawContext(ctx context.Context, topic string, message any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if topic == "" {
 		return fmt.Errorf("mqtt: topic required")
 	}
-	return m.publish(topic, message)
+	return m.publishContext(ctx, topic, message)
 }
 
 func (m *MqttSender) publish(topic string, message any) error {
+	return m.publishContext(context.Background(), topic, message)
+}
+func (m *MqttSender) publishContext(ctx context.Context, topic string, message any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if m.client == nil {
 		return fmt.Errorf("mqtt: not connected")
 	}
@@ -139,8 +160,8 @@ func (m *MqttSender) publish(topic string, message any) error {
 		return fmt.Errorf("mqtt: encode message: %w", err)
 	}
 	token := m.client.Publish(topic, 0, false, payload)
-	if !token.WaitTimeout(10 * time.Second) {
-		return fmt.Errorf("mqtt: publish timeout %s", topic)
+	if err := waitMQTT(ctx, token, 10*time.Second); err != nil {
+		return fmt.Errorf("mqtt: publish timeout: %w", err)
 	}
 	if token.Error() != nil {
 		return fmt.Errorf("mqtt: publish %s: %w", topic, token.Error())
@@ -162,5 +183,29 @@ func (m *MqttSender) Disconnect() {
 	if m.client != nil {
 		m.client.Disconnect(500)
 		m.client = nil
+	}
+}
+
+func mqttWait(ctx context.Context, fallback time.Duration) time.Duration {
+	if deadline, ok := ctx.Deadline(); ok {
+		if left := time.Until(deadline); left < fallback {
+			if left <= 0 {
+				return time.Nanosecond
+			}
+			return left
+		}
+	}
+	return fallback
+}
+func waitMQTT(ctx context.Context, token mqtt.Token, timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return context.DeadlineExceeded
+	case <-token.Done():
+		return nil
 	}
 }

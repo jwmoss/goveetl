@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -37,7 +38,7 @@ func TestSaveWritesConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0600 {
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0600 {
 		t.Fatalf("mode = %v", got)
 	}
 	if err := os.Chmod(path, 0644); err != nil {
@@ -50,7 +51,7 @@ func TestSaveWritesConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0600 {
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0600 {
 		t.Fatalf("updated config mode = %v", got)
 	}
 }
@@ -68,5 +69,48 @@ func TestAppHostDefaultsAndLegacyConfig(t *testing.T) {
 		if cfg.BaseURL != "https://app2.govee.com" || cfg.OpenAPIBaseURL != "https://openapi.api.govee.com" {
 			t.Errorf("app=%s official=%s", cfg.BaseURL, cfg.OpenAPIBaseURL)
 		}
+	}
+}
+
+func TestSavePrivateReplacement(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	path := filepath.Join(dir, "config.yaml")
+	original := []byte("original")
+	if err := os.WriteFile(target, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+	originalInfo, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := Save(path, Default()); err == nil {
+		t.Error("Save followed symlink")
+	}
+	data, _ := os.ReadFile(target)
+	if string(data) != string(original) {
+		t.Error("symlink target changed")
+	}
+	info, _ := os.Stat(target)
+	if info.Mode() != originalInfo.Mode() {
+		t.Error("symlink target permissions changed")
+	}
+	_ = os.Remove(path)
+	if err := os.Link(target, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, Default()); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(target)
+	if string(data) != string(original) {
+		t.Error("hardlink target changed")
+	}
+	info, _ = os.Stat(target)
+	if info.Mode() != originalInfo.Mode() {
+		t.Error("hardlink target permissions changed")
 	}
 }

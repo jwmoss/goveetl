@@ -1,6 +1,7 @@
 package output
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,6 +39,19 @@ func (f *Formatter) IsPlain() bool {
 }
 
 func (f *Formatter) JSON(data any) error {
+	if raw, ok := data.(json.RawMessage); ok {
+		if !json.Valid(raw) {
+			return fmt.Errorf("response is not valid JSON")
+		}
+		if _, err := f.stdout.Write(raw); err != nil {
+			return err
+		}
+		if !bytes.HasSuffix(raw, []byte("\n")) {
+			_, err := io.WriteString(f.stdout, "\n")
+			return err
+		}
+		return nil
+	}
 	encoder := json.NewEncoder(f.stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(data)

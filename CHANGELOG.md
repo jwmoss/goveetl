@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.1
+
+- Return JSON `null` for successful raw requests with no response body.
+
+- Scope credentials and custom headers to the configured origin and guard redirects.
+- Redact credential diagnostics and bound HTTP responses.
+- Publish private config and session replacements without destination symlink traversal.
+- Preserve exact raw JSON and correct config receipts, paths, and usage exit codes.
+- Propagate provider timeouts and traces, and honor MQTT and LAN cancellation.
+- Preserve official read POSTs, login verification, and dry-run mutation guards.
+- Resolve module and VCS versions without config access.
+- Update the MQTT dependency to fix reachable MQTT and proxy vulnerabilities.
+- Use Go 1.27.1 and gate releases on native tests, race checks, and security scans.
+
 ## 1.2.0
 
 - Add password login and email verification through the account REST API.
