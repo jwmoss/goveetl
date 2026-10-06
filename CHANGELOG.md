@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.0
+
+- Add password login and email verification through the account REST API.
+- Add hidden terminal prompts, stdin input, and script environment variables.
+- Verify a new app session before saving it; preserve the existing session on failure.
+- Add `auth status` and report authenticated access in human-readable doctor output.
+- Reject empty refreshed tokens and keep credentials out of auth output.
+- Restore mode 0600 before updating an existing configuration file.
+- Document re-login as the verified renewal path and the remaining refresh rejection.
+
 ## 1.1.1
 
 - Omit null object fields from automation writes to match the app's Gson serializer.

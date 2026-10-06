@@ -40,6 +40,19 @@ func TestSaveWritesConfig(t *testing.T) {
 	if got := info.Mode().Perm(); got != 0600 {
 		t.Fatalf("mode = %v", got)
 	}
+	if err := os.Chmod(path, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	info, err = os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Fatalf("updated config mode = %v", got)
+	}
 }
 
 func TestAppHostDefaultsAndLegacyConfig(t *testing.T) {

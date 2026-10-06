@@ -34,9 +34,21 @@ func newDoctorCommand(rc *runtime) *cobra.Command {
 				rc.out.Printf("openapi key: MISSING (set api_key)\n")
 			}
 			if state := report["app"].(doctorAppResult); state.Token {
-				rc.out.Printf("app session: present (topic %s)\n", rc.cfg.AccountTopic)
+				rc.out.Printf("app session: present\n")
 			} else {
-				rc.out.Printf("app session: MISSING (import token with goveetl config set token --stdin)\n")
+				rc.out.Printf("app session: MISSING (run goveetl auth login --email <email>)\n")
+			}
+			for _, item := range []struct {
+				name   string
+				result doctorResult
+			}{
+				{"openapi", report["openapi"].(doctorResult)}, {"app", report["app"].(doctorAppResult).Doctor},
+			} {
+				if item.result.Error != "" {
+					rc.out.Printf("%s check: %s\n", item.name, item.result.Error)
+				} else if item.result.Configured {
+					rc.out.Printf("%s check: authenticated\n", item.name)
+				}
 			}
 			return nil
 		},
