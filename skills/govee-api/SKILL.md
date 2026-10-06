@@ -14,7 +14,7 @@ Read `AGENTS.md` before code changes. Prefer the official API for supported oper
 | Surface | Credentials | Live verification |
 | --- | --- | --- |
 | Official | Developer API key | Inventory, state, scenes/DIY lists, brightness control |
-| App | Captured session token | Device and group lists, same-mode group membership |
+| App | Captured session token | Device/group lists, group membership, automation reads |
 | MQTT | App session, account ID and topic | Certificate, device topic, connection, state messages, brightness control |
 | LAN | Enable LAN Control in Govee Home | Multicast/direct discovery, state, brightness control |
 
@@ -95,6 +95,31 @@ goveetl mqtt watch --duration 15s
 Data must be a JSON object. Command versions differ by device; the default is 0.
 Use distinct `GOVEETL_CLIENT_ID` values for concurrent watcher and control processes.
 The device publish topic differs from the account reply topic. Preserve both.
+
+## Saved automations
+
+Use the CLI for household changes. Add missing operations to goveetl before use.
+Use Java or decompiled code to establish the wire contract when needed.
+
+```bash
+goveetl automations list --json
+goveetl automations show 42 --json
+goveetl automations set 42 'AA:BB:H706C' --power on --brightness 60 --temperature 2700 --dry-run
+goveetl automations set 42 'AA:BB:H706C' --power on --brightness 60 --temperature 2700
+goveetl automations remove-device 42 'CC:DD:H616C'
+goveetl automations show 42 --json
+```
+
+Writes remain experimental: live requests return Govee status 500. Report that
+failure and the fresh saved state. Temperature edits support H706C at 2700 K only.
+They replace saved scenes or colors. Power and brightness edits preserve the mode.
+The CLI preserves other actions and the trigger, then verifies an accepted write.
+Verification failure means the save remains unconfirmed; inspect it before retrying.
+An automation read verifies stored settings, not a future trigger or visible light output.
+
+Use `raw --backend app` when a private endpoint has no dedicated command.
+This mode sends app identity headers and rejects Govee error statuses.
+Keep raw responses out of logs: they can contain account topics and home coordinates.
 
 ## Limits and changes
 

@@ -16,12 +16,16 @@ func newRawCommand(rc *runtime) *cobra.Command {
 		dataFlag  string
 		fileFlag  string
 		queryFlag []string
+		backend   string
 	)
 	cmd := &cobra.Command{
 		Use:   "raw <method> <path>",
 		Short: "Send a raw HTTP request",
 		Args:  usageArgs(cobra.ExactArgs(2)),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if rc.g.dryRun && !strings.EqualFold(strings.TrimSpace(args[0]), http.MethodGet) {
+				return fmt.Errorf("dry-run: refusing %s %s", args[0], args[1])
+			}
 			var body any
 			if dataFlag != "" && fileFlag != "" {
 				return fmt.Errorf("%w: use only one of --data or --file", errUsage)
@@ -44,7 +48,22 @@ func newRawCommand(rc *runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			resp, err := rc.client.Do(cmd.Context(), args[0], args[1], query, body)
+			var resp []byte
+			switch backend {
+			case "", "raw":
+				resp, err = rc.client.Do(cmd.Context(), args[0], args[1], query, body)
+			case "app":
+				if err := rc.requireToken(); err != nil {
+					return err
+				}
+				app, e := rc.appClient(cmd.Context())
+				if e != nil {
+					return e
+				}
+				resp, err = app.Do(cmd.Context(), args[0], args[1], query, body)
+			default:
+				return fmt.Errorf("%w: backend must be raw or app", errUsage)
+			}
 			if err != nil {
 				return err
 			}
@@ -67,6 +86,7 @@ func newRawCommand(rc *runtime) *cobra.Command {
 	cmd.Flags().StringVar(&dataFlag, "data", "", "JSON request body")
 	cmd.Flags().StringVar(&fileFlag, "file", "", "path to JSON request body")
 	cmd.Flags().StringArrayVar(&queryFlag, "query", nil, "query parameter in key=value form")
+	cmd.Flags().StringVar(&backend, "backend", "", "request headers: raw (default) or app")
 	_ = http.MethodGet
 	return cmd
 }
