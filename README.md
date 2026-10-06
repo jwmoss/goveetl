@@ -211,7 +211,8 @@ goveetl raw GET /bff-app/v1/general-control/list --backend app --query filterEmp
 
 Raw JSON preserves large integers, duplicate keys, and exponent notation.
 Use one of `--data` or `--file` for a JSON request body.
-With `--json`, a non-JSON response returns exit code 1 with no response on stdout.
+With `--json`, an empty successful response produces `null`.
+Other non-JSON response bodies return exit code 1 with no response on stdout.
 
 The client sends credentials and extra request headers only to the configured origin.
 The origin includes the scheme, hostname, and port.
