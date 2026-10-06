@@ -77,7 +77,18 @@ func PatchPad(version string) string {
 }
 
 func (a *App) Do(ctx context.Context, method, path string, query map[string][]string, body any) ([]byte, error) {
-	return a.client.DoWithHeaders(ctx, method, path, query, body, a.headers)
+	data, err := a.client.DoWithHeaders(ctx, method, path, query, body, a.headers)
+	if err != nil {
+		return data, err
+	}
+	var env struct {
+		Status  *int   `json:"status"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(data, &env) == nil && env.Status != nil && *env.Status != 200 {
+		return data, &Error{Status: *env.Status, Message: env.Message}
+	}
+	return data, nil
 }
 
 // Refresh exchanges a refresh token for a fresh bundle.

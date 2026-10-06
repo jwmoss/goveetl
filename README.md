@@ -107,6 +107,34 @@ App tokens can expire. Import a fresh token when authentication fails.
 `auth refresh` requires a captured refresh token and remains unverified live.
 `auth logout` clears the stored session.
 
+## Govee Home automations
+
+Read automation IDs and saved device actions through the app session:
+
+```bash
+goveetl automations list --json
+goveetl automations show 42 --json
+```
+
+The output includes power, brightness, temperature, and scene names when available.
+It omits MQTT topics, command messages, and trigger location data.
+
+Automation writes are experimental. Live reads pass, but Govee returns status 500
+for the tested update requests. The CLI reports the error and does not claim success.
+
+```bash
+goveetl automations set 42 'AA:BB:H706C' --power on --brightness 60 --temperature 2700 --dry-run
+goveetl automations set 42 'AA:BB:H706C' --power on --brightness 60 --temperature 2700
+goveetl automations remove-device 42 'CC:DD:H616C'
+goveetl automations show 42 --json
+```
+
+Power and brightness edits preserve the existing light mode. A temperature edit
+replaces saved color or scene commands with native warm white. Temperature writes
+currently support H706C at 2700 K only. Other devices and action groups remain unchanged.
+The CLI refuses ambiguous device actions and removal of an action group's last device.
+It reads the saved automation again after an accepted write and fails if verification differs.
+
 ## LAN
 
 Enable LAN Control in Govee Home. Discovery sends JSON to multicast
@@ -145,11 +173,12 @@ remain available.
 
 ## Raw requests
 
-`raw` uses the app host and session token. It does not validate private API semantics.
+`raw` uses the configured host and token. Add `--backend app` for app identity
+headers and Govee response-status checks. The default retains generic HTTP behavior.
 
 ```bash
-goveetl raw GET /bff-app/v1/device/list
-goveetl raw GET /bff-app/v1/general-control/list --query filterEmpty=false
+goveetl raw GET /bff-app/v1/device/list --backend app
+goveetl raw GET /bff-app/v1/general-control/list --backend app --query filterEmpty=false
 ```
 
 `--dry-run` blocks every non-GET raw request.
@@ -160,7 +189,7 @@ Live verification covers official/app inventories, group membership, scene/DIY
 catalogs, LAN discovery/status, MQTT connection/state messages, and brightness
 control through cloud, LAN, and MQTT. Each control test restores the original state.
 
-Group scene mutations, token refresh, and other reverse-engineered endpoints
+Automation writes, group scene mutations, token refresh, and other reverse-engineered endpoints
 remain unverified. The extracted APK endpoint list is research evidence, not a
 claim that every endpoint has a supported CLI command.
 

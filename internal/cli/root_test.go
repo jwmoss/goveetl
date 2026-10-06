@@ -98,6 +98,9 @@ func TestDryRunPreventsSideEffects(t *testing.T) {
 		{"config", "set", "email", "changed@example.com"},
 		{"config", "init", "--force"},
 		{"raw", "POST", "/mutate", "--data", "{}"},
+		{"raw", "post", "/mutate", "--backend", "app", "--data", "{}"},
+		{"automations", "set", "42", "test:H706C", "--brightness", "20"},
+		{"automations", "remove-device", "42", "test:H616C"},
 	} {
 		t.Run(strings.Join(args[:2], " ")+strings.Join(args[2:], " "), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.yaml")

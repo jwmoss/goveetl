@@ -96,7 +96,7 @@ func newRootCommand(rc *runtime) *cobra.Command {
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			if rc.g.dryRun {
 				switch cmd.Name() {
-				case "control", "login", "refresh", "logout", "set", "init":
+				case "control", "login", "refresh", "logout", "set", "init", "remove-device":
 					return fmt.Errorf("dry-run: refusing %s", cmd.CommandPath())
 				}
 			}
@@ -130,6 +130,7 @@ func newRootCommand(rc *runtime) *cobra.Command {
 	root.AddCommand(newScenesCommand(rc))
 	root.AddCommand(newControlCommand(rc))
 	root.AddCommand(newGroupsCommand(rc))
+	root.AddCommand(newAutomationsCommand(rc))
 	root.AddCommand(newMqttCommand(rc))
 	root.AddCommand(newLanCommand(rc))
 	root.AddCommand(newCompletionCommand(root))
