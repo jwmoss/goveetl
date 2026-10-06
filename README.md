@@ -119,8 +119,9 @@ goveetl automations show 42 --json
 The output includes power, brightness, temperature, and scene names when available.
 It omits MQTT topics, command messages, and trigger location data.
 
-Automation writes are experimental. Live reads pass, but Govee returns status 500
-for the tested update requests. The CLI reports the error and does not claim success.
+Live verification covers H706C saved warm-white settings at 60% and 2700 K.
+The CLI omits null object fields to match the app's serializer; including those
+fields causes Govee status 500. Device-removal writes remain unverified live.
 
 ```bash
 goveetl automations set 42 'AA:BB:H706C' --power on --brightness 60 --temperature 2700 --dry-run
@@ -189,7 +190,7 @@ Live verification covers official/app inventories, group membership, scene/DIY
 catalogs, LAN discovery/status, MQTT connection/state messages, and brightness
 control through cloud, LAN, and MQTT. Each control test restores the original state.
 
-Automation writes, group scene mutations, token refresh, and other reverse-engineered endpoints
+Automation device removal, group scene mutations, token refresh, and other reverse-engineered endpoints
 remain unverified. The extracted APK endpoint list is research evidence, not a
 claim that every endpoint has a supported CLI command.
 

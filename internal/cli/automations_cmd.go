@@ -66,7 +66,7 @@ func newAutomationsCommand(rc *runtime) *cobra.Command {
 	}}
 	var power string
 	var brightness, temperature int
-	set := &cobra.Command{Use: "set <id> <device>:<sku>", Short: "Set saved light settings (experimental); verify the result", Args: usageArgs(cobra.ExactArgs(2)), RunE: func(cmd *cobra.Command, args []string) error {
+	set := &cobra.Command{Use: "set <id> <device>:<sku>", Short: "Set saved light settings and verify the result", Args: usageArgs(cobra.ExactArgs(2)), RunE: func(cmd *cobra.Command, args []string) error {
 		id, err := automationID(args[0])
 		if err != nil {
 			return err

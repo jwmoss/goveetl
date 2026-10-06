@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.1
+
+- Omit null object fields from automation writes to match the app's Gson serializer.
+- Normalize nullable read metadata during saved-state verification.
+- Fix warm-white automation saves that previously fail with Govee status 500.
+- Verify a live H706C saved-setting update at 60% and 2700 K.
+
 ## 1.1.0
 
 - Add Govee Home automation lists and saved device-setting views without private messaging or location data.

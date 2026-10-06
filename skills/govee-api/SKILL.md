@@ -110,8 +110,9 @@ goveetl automations remove-device 42 'CC:DD:H616C'
 goveetl automations show 42 --json
 ```
 
-Writes remain experimental: live requests return Govee status 500. Report that
-failure and the fresh saved state. Temperature edits support H706C at 2700 K only.
+Saved-setting writes pass live for H706C at 60% and 2700 K. The app's Gson serializer
+omits null object fields; including them causes Govee status 500. The CLI now omits them.
+Device-removal writes remain unverified live. Temperature edits support H706C at 2700 K only.
 They replace saved scenes or colors. Power and brightness edits preserve the mode.
 The CLI preserves other actions and the trigger, then verifies an accepted write.
 Verification failure means the save remains unconfirmed; inspect it before retrying.
