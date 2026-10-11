@@ -36,12 +36,10 @@ skills/               agent skills (see "Working with agents" below)
 
 ```bash
 make build          # ./bin/goveetl
-make check          # fmt + tidy + vet + test + build + go.mod diff gate
+make check          # formatting, module consistency, vet, script syntax, build
 ```
 
-`make check` is the pre-handoff gate; if it fails, fix before continuing. Its
-`git diff --exit-code -- go.mod go.sum` step fails when you've left dependency
-changes uncommitted — run `make tidy` first or commit the change.
+`make check` is the static pre-handoff gate. It does not change source files.
 
 ## CLI rules
 
@@ -58,22 +56,13 @@ changes uncommitted — run `make tidy` first or commit the change.
 
 - All endpoint/shape truth lives in `internal/govee/`. Never parse responses
   inside a command.
-- When adding a command name, add a `capabilityRoute` mapping in
-  `internal/govee/openapi.go` plus a test in
-  `internal/govee/govee_test.go`. Route entries describe the officially
-  documented `(capability type, instance)` pair; don't invent untested ones.
+- Add command routes in `internal/govee/openapi.go` from verified capability type and instance pairs.
+- Verify new routes through the live CLI when safe.
 - Don't push changes that mutate another person's device state without a state
   snapshot + restore plan; see the safe-change discipline in
   `skills/govee-api/SKILL.md`.
 - Secrets: keep API keys/tokens in 1Password or env; never in code, tests, or
   fixtures. Reference 1Password at runtime with `op item get`.
-
-## Testing
-
-- Unit test wire shapes (`internal/govee/govee_test.go`); that's where drift
-  bites first.
-- Don't write tests that hit Govee live — unit-test shapes, live-verify by hand.
-- `make check` after every material change.
 
 ## Commits and PRs
 
@@ -110,3 +99,12 @@ make check
 
 Release pipeline changes: also verify the workflow with `gh run watch` after
 the tag push (see `skills/goveetl-release/SKILL.md` failure modes).
+
+## Test policy
+
+- Keep only live end-to-end tests against the configured service and static checks.
+- Do not add unit tests, mock transports, fake servers, device simulators, or synthetic subprocess fixtures.
+- Run `make check` for formatting, module consistency, vet, script syntax, and builds.
+- Run `make test` with existing credentials for read-only live verification.
+- Report missing credentials or service failures as blocked live checks, never passes.
+- CI runs static checks without credentials. It does not run live service tests.
