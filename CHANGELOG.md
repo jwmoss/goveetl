@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.2.2] - 2026-10-10
+
+- Use real device reads for end-to-end checks and retain static CI.
+- Remove synthetic test suites and use Go 1.27.2.
+
 ## 1.2.1
 
 - Return JSON `null` for successful raw requests with no response body.
