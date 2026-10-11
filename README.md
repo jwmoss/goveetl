@@ -251,8 +251,11 @@ Version output uses module and VCS build information when release metadata is ab
 ## Development and release
 
 ```bash
-make check
+make check      # static checks and build
+make test       # live inventory and device state
 ```
 
-Unit tests use local HTTP, MQTT, and UDP fixtures. Live device tests remain manual.
+The live test requires Python 3 and a configured Govee API key.
+It checks the compiled CLI against the real inventory and state endpoints without device mutations.
+CI runs static checks without credentials. Unit tests and synthetic fixtures are not part of this project.
 Release instructions are in [skills/goveetl-release/SKILL.md](skills/goveetl-release/SKILL.md).

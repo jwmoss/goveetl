@@ -135,5 +135,6 @@ Group scene mutations and token refresh remain unverified live. The APK endpoint
 inventory does not imply complete CLI coverage. Consult the local evidence before
 adding private endpoints, then verify the wire contract against the live service.
 
-Add command routes and protocol tests in `internal/govee/`. Keep CLI wrappers thin.
+Add verified command routes in `internal/govee/`. Keep CLI wrappers thin.
+Use `make test` for read-only live verification. Do not add unit tests or synthetic fixtures.
 Run `make check` before handoff. Use `goveetl-release` for merge and release work.
