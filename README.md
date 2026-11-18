@@ -257,5 +257,7 @@ make test       # live inventory and device state
 
 The live test requires Python 3 and a configured Govee API key.
 It checks the compiled CLI against the real inventory and state endpoints without device mutations.
+With a valid Govee Home session, run `GOVEETL_LIVE_APP=1 make test` to check app authentication and token rejection.
+`auth status --json` reports Govee's status code when the app responds with an error inside an HTTP 200 response.
 CI runs static checks without credentials. Unit tests and synthetic fixtures are not part of this project.
 Release instructions are in [skills/goveetl-release/SKILL.md](skills/goveetl-release/SKILL.md).

@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jwmoss/goveetl/internal/api"
+	"github.com/jwmoss/goveetl/internal/govee"
 )
 
 func newDoctorCommand(rc *runtime) *cobra.Command {
@@ -106,12 +107,14 @@ func fin(started doctorResult, err error, _ time.Time) doctorResult {
 		return started
 	}
 	var apiErr *api.APIError
-	if errors.As(err, &apiErr) && apiErr.Status > 0 {
+	var appErr *govee.Error
+	switch {
+	case errors.As(err, &apiErr) && apiErr.Status > 0:
 		started.Status = apiErr.Status
-		// A 4xx from the service still proves the endpoint answers.
 		started.Reachable = apiErr.Status >= 200
-		started.Error = apiErr.Error()
-		return started
+	case errors.As(err, &appErr) && appErr.Status > 0:
+		started.Status = appErr.Status
+		started.Reachable = true
 	}
 	started.Error = err.Error()
 	return started
