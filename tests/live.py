@@ -2,6 +2,7 @@
 """Read the configured live service through the compiled CLI."""
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -9,11 +10,11 @@ import sys
 binary = str(Path(sys.argv[1] if len(sys.argv) > 1 else "bin/goveetl").resolve())
 
 
-def read(*args):
+def read(*args, env=None):
     try:
         result = subprocess.run(
             [binary, "--no-input", "--timeout", "15s", "--json", *args],
-            capture_output=True, text=True, timeout=60, check=False,
+            capture_output=True, text=True, timeout=60, check=False, env=env,
         )
     except (OSError, subprocess.TimeoutExpired):
         raise SystemExit("Live check failed: executable unavailable or deadline exceeded.") from None
@@ -45,3 +46,13 @@ require(isinstance(payload, dict) and payload.get("device") == selected["device"
 capabilities = payload.get("capabilities")
 require(isinstance(capabilities, list) and any(isinstance(c, dict) and isinstance(c.get("state"), dict) and "value" in c["state"] for c in capabilities), "no device state values")
 print(f"Live E2E passed: {len(devices)} devices; current state received for one device.")
+
+if os.environ.get("GOVEETL_LIVE_APP") == "1":
+    status = read("--dry-run", "auth", "status")["app"]["doctor"]
+    require(status["reachable"] and status["status"] == 200 and not status.get("error"),
+            "app session did not authenticate")
+    expired = read("--dry-run", "auth", "status",
+                   env={**os.environ, "GOVEETL_TOKEN": "invalid-live-test-token"})["app"]["doctor"]
+    require(expired["reachable"] and expired["status"] == 401 and expired.get("error"),
+            "app session rejection did not report status 401")
+    print("Live app checks passed for an authenticated session and a rejected token.")

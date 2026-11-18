@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.2.3] - 2026-11-17
+
+- Report the Govee Home authentication error code when the app service rejects a session.
+
 ## [1.2.2] - 2026-10-10
 
 - Use real device reads for end-to-end checks and retain static CI.
